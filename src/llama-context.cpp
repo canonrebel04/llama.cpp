@@ -206,7 +206,7 @@ llama_context::llama_context(
 
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
 
-    cparams.n_outputs_max = params.n_outputs_max == 0 || llama_model_has_encoder(&model) ? cparams.n_batch : params.n_outputs_max;
+    cparams.n_outputs_max = params.n_outputs_max == 0 || llama_model_has_encoder(&model) || model.arch == LLM_ARCH_DREAM || model.arch == LLM_ARCH_LLADA ? cparams.n_batch : params.n_outputs_max;
 
     cparams.op_offload = params.op_offload;
     cparams.kv_unified = params.kv_unified;

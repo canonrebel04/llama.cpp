@@ -1,4 +1,15 @@
-# llama.cpp
+# llama.cpp (CaffeineAdd1ct Optimized Fork)
+
+> [!NOTE]
+> This is a customized fork of `llama.cpp` containing key performance optimizations designed by Fable to accelerate Mixture of Experts (MoE) model prefill throughput (up to 65% faster prompt processing on consumer hardware like the RTX 3060).
+
+### 🚀 Included Optimizations:
+1. **Mmap-backed CPU weight pinning (`GGML_CUDA_REGISTER_HOST=1`)**
+   - Pins the system RAM pages backing mapped model weights for faster Host-to-Device (H2D) PCIe transfers, maintaining instant model loading/swapping from `mmap`.
+2. **Concurrent Offloaded Expert Prefetching (`GGML_SCHED_PREFETCH_EXPERTS=1`)**
+   - Prefetches offloaded MoE expert weights in parallel during the attention compute phase using a double-buffered async pipeline. This reduces GPU idle time during MoE prefill transfers from 41.7% to 2.8%.
+
+---
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
 

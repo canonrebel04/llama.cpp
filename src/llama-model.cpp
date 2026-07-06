@@ -2660,6 +2660,28 @@ bool llama_model_has_decoder(const llama_model * model) {
     }
 }
 
+bool llama_model_has_kv_cache(const llama_model * model) {
+    switch (model->arch) {
+        case LLM_ARCH_BERT:
+        case LLM_ARCH_JINA_BERT_V2:
+        case LLM_ARCH_JINA_BERT_V3:
+        case LLM_ARCH_NOMIC_BERT:
+        case LLM_ARCH_NOMIC_BERT_MOE:
+        case LLM_ARCH_NEO_BERT:
+        case LLM_ARCH_EUROBERT:
+        case LLM_ARCH_WAVTOKENIZER_DEC:
+        case LLM_ARCH_MODERN_BERT:
+        case LLM_ARCH_GEMMA_EMBEDDING:
+        case LLM_ARCH_DREAM:
+        case LLM_ARCH_LLADA:
+        case LLM_ARCH_LLADA_MOE:
+        case LLM_ARCH_RND1:
+            return false;
+        default:
+            return true;
+    }
+}
+
 llama_token llama_model_decoder_start_token(const llama_model * model) {
     return model->hparams.dec_start_token_id;
 }
