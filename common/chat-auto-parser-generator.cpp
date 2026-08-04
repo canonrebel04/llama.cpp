@@ -47,6 +47,8 @@ common_chat_params peg_generator::generate_parser(const common_chat_template &  
     data.generation_prompt = common_chat_template_generation_prompt(tmpl, inputs);
     data.format            = COMMON_CHAT_FORMAT_PEG_NATIVE;
     data.preserved_tokens  = autoparser.preserved_tokens;
+    data.additional_stops.insert(data.additional_stops.end(),
+        autoparser.additional_stops.begin(), autoparser.additional_stops.end());
 
     std::string parser_generation_prompt = data.generation_prompt;
 
@@ -163,7 +165,9 @@ common_peg_parser analyze_reasoning::build_parser(parser_build_context & ctx) co
         if (!end.empty()) {
             if (!start.empty()) {
                 // Standard tag-based: optional(<think>reasoning</think>)
-                return p.optional(p.optspace(start) + p.reasoning(p.until(trim_whitespace(end))) + p.optspace(end));
+                // Allow optional whitespace before the start tag — some models
+                // emit a newline before reasoning begins.
+                return p.optional(p.space() + p.optspace(start) + p.reasoning(p.until(trim_whitespace(end))) + p.optspace(end));
             }
             // Delimiter-style (empty start)
             return p.optional(p.reasoning(p.until(trim_whitespace(end))) + p.optspace(end));
@@ -286,7 +290,13 @@ common_peg_parser analyze_tools::build_func_parser(common_chat_peg_builder & p, 
         // we only emit tool_close when we can actually see the closing marker. This prevents
         // premature closing during partial parsing when we've seen e.g. "</" which could be
         // either "</tool_call>" (end) or "<arg_key>" prefix that failed to match.
-        func_parser = func_parser + p.tool_close(p.peek(p.literal(format.per_call_end)));
+        // Laguna (v4): the model may emit whitespace between the last </arg_value> and
+        // </tool_call> even though the template renders them tight. Tolerate optional
+        // leading space in the close lookahead so the tool call still closes.
+        auto close_peek = arguments.tolerate_intertag_whitespace
+                              ? p.peek(p.space() + p.literal(format.per_call_end))
+                              : p.peek(p.literal(format.per_call_end));
+        func_parser = func_parser + p.tool_close(close_peek);
     } else {
         func_parser = func_parser + p.tool_close(p.space());  // force this to process tool closing callbacks in mapper
     }

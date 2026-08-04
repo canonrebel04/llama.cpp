@@ -510,6 +510,9 @@ int cli_context::run() {
 
         // skip empty messages
         if (buffer.empty()) {
+            if (std::cin.eof() || feof(stdin)) {
+                break; // EOF on stdin: end the interactive session
+            }
             continue;
         }
 
@@ -624,10 +627,14 @@ int cli_context::run() {
         generated_content content;
         generate_completion(content, timings);
 
-        impl->messages.push_back({
+        json assistant_msg = {
             {"role",    "assistant"},
             {"content", content.content}
-        });
+        };
+        if (!content.reasoning.empty()) {
+            assistant_msg["reasoning_content"] = content.reasoning;
+        }
+        impl->messages.push_back(std::move(assistant_msg));
 
         if (output_file) {
             std::string out_content = "Assistant:\n";

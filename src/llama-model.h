@@ -123,6 +123,7 @@ enum llm_type {
     LLM_TYPE_24B_A2B, // lfm2moe
     LLM_TYPE_26B_A4B, // Gemma4
     LLM_TYPE_30B_A3B,
+    LLM_TYPE_118B_A8B,
     LLM_TYPE_31B_A3_5B,
     LLM_TYPE_35B_A3B, // Qwen3.5
     LLM_TYPE_48B_A3B, // Kimi Linear
@@ -134,6 +135,7 @@ enum llm_type {
     LLM_TYPE_122B_A10B, // Qwen3.5
     LLM_TYPE_196B_A11B, // Step3.5-Flash
     LLM_TYPE_230B_A10B, // Minimax M2
+    LLM_TYPE_428B_A23B, // Minimax M3
     LLM_TYPE_235B_A22B,
     LLM_TYPE_300B_A47B, // Ernie MoE big
     LLM_TYPE_310B_A15B, // /MiMo-V2-Flash
@@ -261,6 +263,11 @@ struct llama_layer {
     struct ggml_tensor * wqkv_b    = nullptr;
     struct ggml_tensor * wo_a      = nullptr;
     struct ggml_tensor * wo_b      = nullptr;
+    // DFlash: separate Q/K/V/O bias tensors
+    struct ggml_tensor * bq   = nullptr;
+    struct ggml_tensor * bk   = nullptr;
+    struct ggml_tensor * bv   = nullptr;
+    struct ggml_tensor * bo   = nullptr;
     struct ggml_tensor * wq_cross  = nullptr;
     struct ggml_tensor * wk_cross  = nullptr;
     struct ggml_tensor * wv_cross  = nullptr;
@@ -515,8 +522,19 @@ struct llama_layer {
     struct ggml_tensor * indexer_attn_k   = nullptr;
     struct ggml_tensor * indexer_attn_q_b = nullptr; // note: for lora a/b, not bias
 
+    // MSA
+    struct ggml_tensor * index_q_proj = nullptr;
+    struct ggml_tensor * index_k_proj = nullptr;
+    struct ggml_tensor * index_q_norm = nullptr;
+    struct ggml_tensor * index_k_norm = nullptr;
+
     // gemma4 layer output scale, reused for talkie embedding skip scale
     struct ggml_tensor * out_scale = nullptr;
+    // EAGLE3 hidden norm (per-layer)
+    struct ggml_tensor * eagle3_hidden_norm = nullptr;
+
+
+
 
     struct llama_layer_posnet posnet;
 
@@ -599,8 +617,22 @@ struct llama_model {
     struct ggml_tensor * fc  = nullptr;  // feature fusion layer
     struct ggml_tensor * d2t = nullptr;  // draft to target vocabulary mapping
 
+    // dspark
+    struct ggml_tensor * dspark_markov_w1   = nullptr;
+    struct ggml_tensor * dspark_markov_w2   = nullptr;
+    struct ggml_tensor * dspark_conf_proj   = nullptr;
+    struct ggml_tensor * dspark_conf_proj_b = nullptr;
+
     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
     std::vector<int32_t> target_layer_ids;
+    // dflash
+    struct ggml_tensor * dflash_hidden_norm = nullptr;
+    struct ggml_tensor * target_output = nullptr;  // reference to target model's lm_head
+
+    // Reference to target model's embedding layer
+    // This allows EAGLE3 to use target model's embeddings without copying
+    struct ggml_tensor * target_tok_embd = nullptr;
+
 
     std::vector<llama_layer> layers;
 
