@@ -198,10 +198,11 @@ class GGUFReader:
         self, offset: int, dtype: npt.DTypeLike, count: int = 1, override_order: None | Literal['I', 'S', '<'] = None,
     ) -> npt.NDArray[Any]:
         count = int(count)
-        itemsize = int(np.empty([], dtype = dtype).itemsize)
-        end_offs = offset + itemsize * count
-        arr = self.data[offset:end_offs].view(dtype=dtype)[:count]
-        return arr.view(arr.dtype.newbyteorder(self.byte_order if override_order is None else override_order))
+        # Performance optimization: use np.dtype to get itemsize instead of creating an empty array
+        dt = np.dtype(dtype)
+        end_offs = offset + dt.itemsize * count
+        arr = self.data[offset:end_offs].view(dtype=dt)[:count]
+        return arr.view(dt.newbyteorder(self.byte_order if override_order is None else override_order))
 
     def _push_field(self, field: ReaderField, skip_sum: bool = False) -> int:
         if field.name in self.fields:
