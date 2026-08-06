@@ -46,6 +46,8 @@ from .gguf_writer import GGUFWriter
 
 logger = logging.getLogger(__name__)
 
+_KEY_BYTE_MATCH = re.compile(br"<0x[0-9A-Fa-f]{2}>")
+
 
 class SpecialVocab:
     merges: list[str]
@@ -635,7 +637,7 @@ class LlamaHfVocab(Vocab):
 
     def get_token_type(self, token_id: int, token_text: bytes, special_ids: set[int]) -> gguf.TokenType:
         # Special case for byte tokens
-        if re.fullmatch(br"<0x[0-9A-Fa-f]{2}>", token_text):
+        if _KEY_BYTE_MATCH.fullmatch(token_text):
             return gguf.TokenType.BYTE
 
         # Determine token type based on whether it's a special token
