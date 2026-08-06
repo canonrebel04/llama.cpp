@@ -921,8 +921,9 @@ class GpqaDataset(BaseDataset):
         rng = random.Random(self.seed)
 
         self.questions = []
-        for _, row in df.iterrows():
-            question = row.to_dict()
+        columns = df.columns.tolist()
+        for row in df.itertuples(index=False, name=None):
+            question = dict(zip(columns, row))
             question["dataset_type"] = "gpqa"
 
             # Shuffle the answer options
