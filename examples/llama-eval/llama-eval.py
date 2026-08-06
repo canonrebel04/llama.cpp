@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from queue import Queue
