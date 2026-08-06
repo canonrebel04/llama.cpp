@@ -242,12 +242,6 @@ static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::string & t
                 bpe_offsets.push_back(len);
             }
             _prev_end = end;
-            //if (len > 0) {
-            //    std::string s = "";
-            //    for(size_t p = end-len; p < end; p++)
-            //        s += unicode_cpt_to_utf8(cpts[p]);
-            //    printf(">>> '%s'\n", s.c_str());
-            //}
             return len;
         };
 
@@ -360,12 +354,6 @@ static std::vector<size_t> unicode_regex_split_custom_llama3(const std::string &
                 bpe_offsets.push_back(len);
             }
             _prev_end = end;
-            //if (len > 0) {
-            //    std::string s = "";
-            //    for(size_t p = end-len; p < end; p++)
-            //        s += unicode_cpt_to_utf8(cpts[p]);
-            //    printf(">>> '%s'\n", s.c_str());
-            //}
             return len;
         };
 
@@ -501,12 +489,6 @@ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::string & 
                 bpe_offsets.push_back(len);
             }
             _prev_end = end;
-            //if (len > 0) {
-            //    std::string s = "";
-            //    for(size_t p = end-len; p < end; p++)
-            //        s += unicode_cpt_to_utf8(cpts[p]);
-            //    printf(">>> '%s'\n", s.c_str());
-            //}
             return len;
         };
 
