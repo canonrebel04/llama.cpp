@@ -1086,7 +1086,6 @@ Please provide only the extracted answer, nothing else. If there is no clear ans
             ],
             "temperature": 0,
         }
-        #print(json.dumps(data, indent=2))
 
         try:
             response = requests.post(url, headers=headers, json=data)
