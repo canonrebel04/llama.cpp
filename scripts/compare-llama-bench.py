@@ -461,18 +461,44 @@ class LlamaBenchDataJSONL(LlamaBenchDataSQLite3):
         # Get the appropriate field list based on tool
         db_fields = LLAMA_BENCH_DB_FIELDS if tool == "llama-bench" else TEST_BACKEND_OPS_DB_FIELDS
 
+        db_fields_set = frozenset(db_fields)
         with open(data_file, "r", encoding="utf-8") as fp:
-            for i, line in enumerate(fp):
+            data_lines = fp.readlines()
+
+        if data_lines:
+            first_parsed = json.loads(data_lines[0])
+            for k in list(first_parsed.keys()):
+                if k not in db_fields_set:
+                    del first_parsed[k]
+
+            keys = tuple(first_parsed.keys())
+            if (missing_keys := self._check_keys(set(keys))):
+                raise RuntimeError(f"Missing required data key(s) at line 1: {', '.join(missing_keys)}")
+
+            query = f"INSERT INTO {self.table_name}({', '.join(keys)}) VALUES({', '.join('?' * len(keys))});"
+            tuples = []
+
+            for i, line in enumerate(data_lines):
                 parsed = json.loads(line)
 
-                for k in parsed.keys() - set(db_fields):
-                    del parsed[k]
+                if tuple(parsed.keys()) == keys:
+                    tuples.append(tuple(parsed.values()))
+                else:
+                    for k in list(parsed.keys()):
+                        if k not in db_fields_set:
+                            del parsed[k]
 
-                if (missing_keys := self._check_keys(parsed.keys())):
-                    raise RuntimeError(f"Missing required data key(s) at line {i + 1}: {', '.join(missing_keys)}")
+                    if (missing_keys := self._check_keys(parsed.keys())):
+                        raise RuntimeError(f"Missing required data key(s) at line {i + 1}: {', '.join(missing_keys)}")
 
-                self.cursor.execute(f"INSERT INTO {self.table_name}({', '.join(parsed.keys())}) VALUES({', '.join('?' * len(parsed))});", tuple(parsed.values()))
+                    if tuples:
+                        self.cursor.executemany(query, tuples)
+                        tuples = []
 
+                    self.cursor.execute(f"INSERT INTO {self.table_name}({', '.join(parsed.keys())}) VALUES({', '.join('?' * len(parsed))});", tuple(parsed.values()))
+
+            if tuples:
+                self.cursor.executemany(query, tuples)
         self._builds_init()
 
     @staticmethod
