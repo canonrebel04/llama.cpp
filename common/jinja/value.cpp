@@ -1411,8 +1411,8 @@ bool value_compare(const value & a, const value & b, value_compare_op op, bool c
             (is_val<value_string>(a) && (is_val<value_int>(b) || is_val<value_float>(b))) ||
             (is_val<value_string>(a) && is_val<value_string>(b))) {
             try {
-                std::string str_a = is_val<value_string>(a) ? a->as_string().str() : (is_val<value_int>(a) ? std::to_string(a->as_int()) : std::to_string(a->as_float()));
-                std::string str_b = is_val<value_string>(b) ? b->as_string().str() : (is_val<value_int>(b) ? std::to_string(b->as_int()) : std::to_string(b->as_float()));
+                std::string str_a = a->as_string().str();
+                std::string str_b = b->as_string().str();
 
                 if (!case_sensitive && is_val<value_string>(a) && is_val<value_string>(b)) {
                     std::transform(str_a.begin(), str_a.end(), str_a.begin(), ::tolower);
