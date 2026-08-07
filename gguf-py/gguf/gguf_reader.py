@@ -70,6 +70,14 @@ class ReaderField(NamedTuple):
                     else:
                         return [to_string(self.parts[idx]) for idx in indices] # type: ignore
                 else:
+                    # Fast path scalar array check
+                    if len(self.data) == 1 and self.data[0] == -1 and len(self.parts) >= 3:
+                        val_array = self.parts[-1]
+                        if isinstance(index_or_slice, int):
+                            return val_array[index_or_slice].item()
+                        else:
+                            return val_array[index_or_slice].tolist()
+
                     # FIXME: When/if _get_field_parts() support multi-dimensional arrays, this must do so too
 
                     # Check if it's unsafe to perform slice optimization on data
@@ -243,16 +251,32 @@ class GGUFReader:
             offs += int(alen.nbytes)
             aparts: list[npt.NDArray[Any]] = [raw_itype, alen]
             data_idxs: list[int] = []
-            # FIXME: Handle multi-dimensional arrays properly instead of flattening
-            for idx in range(alen[0]):
-                curr_size, curr_parts, curr_idxs, curr_types = self._get_field_parts(offs, raw_itype[0])
-                if idx == 0:
-                    types += curr_types
-                idxs_offs = len(aparts)
-                aparts += curr_parts
-                data_idxs += (idx + idxs_offs for idx in curr_idxs)
-                offs += curr_size
-            return offs - orig_offs, aparts, data_idxs, types
+
+            itype = raw_itype[0]
+            array_gtype = GGUFValueType(itype)
+            nptype = self.gguf_scalar_to_np.get(array_gtype)
+            count = int(alen[0])
+
+            # Fast path for scalar arrays
+            if nptype is not None and count > 0:
+                types.append(array_gtype)
+                val = self._get(offs, nptype, count)
+                aparts.append(val)
+                # Indicate fast path with [-1]
+                data_idxs = [-1]
+                offs += int(val.nbytes)
+                return offs - orig_offs, aparts, data_idxs, types
+            else:
+                # FIXME: Handle multi-dimensional arrays properly instead of flattening
+                for idx in range(count):
+                    curr_size, curr_parts, curr_idxs, curr_types = self._get_field_parts(offs, itype)
+                    if idx == 0:
+                        types += curr_types
+                    idxs_offs = len(aparts)
+                    aparts += curr_parts
+                    data_idxs += [idx + idxs_offs for idx in curr_idxs]
+                    offs += curr_size
+                return offs - orig_offs, aparts, data_idxs, types
         # We can't deal with this one.
         raise ValueError(f'Unknown/unhandled field type {gtype}')
 
