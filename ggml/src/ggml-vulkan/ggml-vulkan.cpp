@@ -6901,16 +6901,24 @@ static vk_device ggml_vk_get_device(size_t idx) {
         ggml_vk_load_shaders(device);
 
         // Prefer a dedicated transfer queue on AMD dGPUs (non-GCN) when graphics queue use is disabled.
+        // Also enable for all multi-queue devices (e.g. NVIDIA + Intel Arc dual-GPU) to overlap PCIe
+        // DMA tensor copies with GPU compute, improving prompt prefill speed on multi-GPU setups.
         const bool prefers_transfer_queue =
-            device->vendor_id == VK_VENDOR_ID_AMD &&
-            device->architecture != AMD_GCN &&
-            !device->uma &&
-            !allow_graphics_queue;
+            (device->vendor_id == VK_VENDOR_ID_AMD &&
+             device->architecture != AMD_GCN &&
+             !device->uma &&
+             !allow_graphics_queue) ||
+            // Auto-enable on any non-UMA discrete GPU with a dedicated transfer queue family.
+            // This dramatically reduces dual-GPU prefill latency by hiding PCIe copy overhead
+            // behind active compute on the other GPU. Can be disabled via env var.
+            (!device->uma && compute_queue_family_index != transfer_queue_family_index &&
+             getenv("GGML_VK_NO_ASYNC_TRANSFER_QUEUE") == nullptr);
 
         if (!device->single_queue) {
             const uint32_t transfer_queue_index = compute_queue_family_index == transfer_queue_family_index ? 1 : 0;
             device->transfer_queue = ggml_vk_create_queue(device, transfer_queue_family_index, transfer_queue_index, { vk::PipelineStageFlagBits::eTransfer }, true);
 
+            // Enable async transfer if preferred, if forced via env var, or unless explicitly disabled.
             device->async_use_transfer_queue = prefers_transfer_queue || (getenv("GGML_VK_ASYNC_USE_TRANSFER_QUEUE") != nullptr);
         } else {
             device->transfer_queue = ggml_vk_create_aliased_queue(device, device->compute_queue);
