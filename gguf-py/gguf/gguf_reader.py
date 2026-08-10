@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 from collections import OrderedDict
@@ -326,8 +327,10 @@ class GGUFReader:
                 raise ValueError(f'Found duplicated tensor with name {tensor_name}')
             tensor_names.add(tensor_name)
             ggml_type = GGMLQuantizationType(raw_dtype[0])
-            n_elems = int(np.prod(dims))
-            np_dims = tuple(reversed(dims.tolist()))
+            # Bolt optimization: math.prod is ~2x faster than np.prod for small tuples/arrays
+            dims_list = dims.tolist()
+            n_elems = math.prod(dims_list)
+            np_dims = tuple(reversed(dims_list))
             block_size, type_size = GGML_QUANT_SIZES[ggml_type]
             n_bytes = n_elems * type_size // block_size
             data_offs = int(start_offs + offset_tensor[0])
