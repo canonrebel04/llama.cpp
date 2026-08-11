@@ -1458,8 +1458,14 @@ class GGUFWriter:
                     raise ValueError("All items in a GGUF array should be of the same type")
             kv_data += self._pack("I", ltype)
             kv_data += self._pack("Q", len(val))
-            for item in val:
-                kv_data += self._pack_val(item, ltype, add_vtype=False)
+            pack_fmt = self._simple_value_packing.get(ltype)
+            if pack_fmt is not None:
+                # OPTIMIZATION: Use a single struct.pack call for primitive arrays instead of a python loop
+                pack_prefix = '<' if self.endianess == GGUFEndian.LITTLE else '>'
+                kv_data += struct.pack(f"{pack_prefix}{len(val)}{pack_fmt}", *val)
+            else:
+                for item in val:
+                    kv_data += self._pack_val(item, ltype, add_vtype=False)
         else:
             raise ValueError("Invalid GGUF metadata value type or value")
 
