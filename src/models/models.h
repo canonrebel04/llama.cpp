@@ -2203,6 +2203,24 @@ struct llama_model_kimi_linear : public llama_model_base {
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 
+// Ling 3.0 flash (inclusionAI/Ling-3.0-flash), model_type "bailing_hybrid".
+// Hybrid KDA + gated MLA MoE. Despite the family name this is NOT the
+// bailingmoe2 stack (Ling 2.0) -- only the MoE router carries over. See
+// src/models/bailing-hybrid.cpp for the deltas against kimi-linear.
+struct llama_model_bailing_hybrid : public llama_model_base {
+    llama_model_bailing_hybrid(const struct llama_model_params & params) : llama_model_base(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    struct graph : public llm_build_delta_net_base {
+        graph(const llama_model & model, const llm_graph_params & params);
+
+        const llama_model & model;
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
 
 struct llama_model_step35 : public llama_model_base {
     llama_model_step35(const struct llama_model_params & params) : llama_model_base(params) {}
@@ -2243,5 +2261,7 @@ struct llm_build_dflash_decode : public llm_graph_context {
 struct llm_build_openai_moe_iswa : public llm_graph_context {
     llm_build_openai_moe_iswa(const llama_model & model, const llm_graph_params & params);
 };
+
+#include "fuse3.h"
 
 

@@ -124,6 +124,7 @@ enum llm_arch {
     LLM_ARCH_OPENAI_MOE,
     LLM_ARCH_LFM2,
     LLM_ARCH_LFM2MOE,
+    LLM_ARCH_FUSE3,
     LLM_ARCH_DREAM,
     LLM_ARCH_SMALLTHINKER,
     LLM_ARCH_LLADA,
@@ -143,6 +144,7 @@ enum llm_arch {
     LLM_ARCH_LLAMA_EMBED,
     LLM_ARCH_MAINCODER,
     LLM_ARCH_KIMI_LINEAR,
+    LLM_ARCH_BAILING_HYBRID,
     LLM_ARCH_TALKIE,
     LLM_ARCH_MELLUM,
     LLM_ARCH_EAGLE3,
@@ -309,6 +311,12 @@ enum llm_kv {
     LLM_KV_SSM_DT_B_C_RMS,
 
     LLM_KV_KDA_HEAD_DIM,
+    LLM_KV_KDA_LOWER_BOUND,
+
+    // fuse3 (LFM2 host + coding experts)
+    LLM_KV_EXPERT_TOP_K,
+    LLM_KV_FUSE3_SWIGLU_LIMIT,
+    LLM_KV_FUSE3_EXPERT_COUNTS,
 
     LLM_KV_WKV_HEAD_SIZE,
 
@@ -495,6 +503,15 @@ enum llm_tensor {
     LLM_TENSOR_SSM_BETA,            // kimi: beta mixing coefficient and qwen3.5
     LLM_TENSOR_SSM_G_A,             // kimi: output gate projection A
     LLM_TENSOR_SSM_G_B,             // kimi: output gate projection B
+    LLM_TENSOR_SSM_F,               // bailing-hybrid: full-rank forget gate (no_kda_lora)
+    LLM_TENSOR_SSM_G,               // bailing-hybrid: full-rank output gate (no_kda_lora)
+
+    // fuse3 expert augmentation tensors
+    LLM_TENSOR_FUSE3_ROUTER,        // blk.%d.fuse3_router
+    LLM_TENSOR_FUSE3_EXPERT_SCALE,  // blk.%d.fuse3_expert_scale
+    LLM_TENSOR_FUSE3_EXPERTS_GATE,  // blk.%d.fuse3_experts.gate
+    LLM_TENSOR_FUSE3_EXPERTS_UP,    // blk.%d.fuse3_experts.up
+    LLM_TENSOR_FUSE3_EXPERTS_DOWN,  // blk.%d.fuse3_experts.down
     LLM_TENSOR_TIME_MIX_W0,
     LLM_TENSOR_TIME_MIX_W1,
     LLM_TENSOR_TIME_MIX_W2,

@@ -163,6 +163,13 @@ struct llama_hparams {
     // for Kimi Linear KDA
     uint32_t n_embd_head_kda = 0;
 
+    // bailing-hybrid KDA safe gate. 0.0f means "not a safe-gate model", i.e. use
+    // the kimi form g = -exp(A_log)*softplus(.) instead.
+    float f_kda_lower_bound = 0.0f;
+
+    // fuse3 expert augmentation (LFM2 host + coding experts)
+    float fuse3_swiglu_limit = 10.0f;
+
     bool ssm_dt_b_c_rms = false;
 
     float f_clamp_kqv      = 0.0f;

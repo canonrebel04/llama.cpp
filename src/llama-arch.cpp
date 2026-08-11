@@ -119,6 +119,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_OPENAI_MOE,       "gpt-oss"          },
     { LLM_ARCH_LFM2,             "lfm2"             },
     { LLM_ARCH_LFM2MOE,          "lfm2moe"          },
+    { LLM_ARCH_FUSE3,            "fuse3"            },
     { LLM_ARCH_DREAM,            "dream"            },
     { LLM_ARCH_SMALLTHINKER,     "smallthinker"     },
     { LLM_ARCH_LLADA,            "llada"            },
@@ -141,6 +142,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_LLAMA_EMBED,      "llama-embed"      },
     { LLM_ARCH_MAINCODER,        "maincoder"        },
     { LLM_ARCH_KIMI_LINEAR,      "kimi-linear"      },
+    { LLM_ARCH_BAILING_HYBRID,   "bailing-hybrid"   },
     { LLM_ARCH_TALKIE,           "talkie"           },
     { LLM_ARCH_MELLUM,           "mellum"           },
     { LLM_ARCH_NANBEIGE,         "nanbeige"         },
@@ -302,7 +304,13 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_SSM_GROUP_COUNT,    "%s.ssm.group_count"    },
     { LLM_KV_SSM_DT_B_C_RMS,     "%s.ssm.dt_b_c_rms"     },
 
-    { LLM_KV_KDA_HEAD_DIM, "%s.kda.head_dim" },
+    { LLM_KV_KDA_HEAD_DIM,    "%s.kda.head_dim" },
+    { LLM_KV_KDA_LOWER_BOUND, "%s.kda.lower_bound" },
+
+    // fuse3
+    { LLM_KV_EXPERT_TOP_K,            "%s.expert_top_k"       },
+    { LLM_KV_FUSE3_SWIGLU_LIMIT,      "fuse3.swiglu_limit"    },
+    { LLM_KV_FUSE3_EXPERT_COUNTS,     "fuse3.expert_counts"   },
 
     { LLM_KV_WKV_HEAD_SIZE, "%s.wkv.head_size" },
 
@@ -465,6 +473,15 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_SSM_BETA,                               "blk.%d.ssm_beta" },
     { LLM_TENSOR_SSM_G_A,                                "blk.%d.ssm_g_a" },
     { LLM_TENSOR_SSM_G_B,                                "blk.%d.ssm_g_b" },
+    { LLM_TENSOR_SSM_F,                                  "blk.%d.ssm_f" },
+    { LLM_TENSOR_SSM_G,                                  "blk.%d.ssm_g" },
+
+    // fuse3 expert augmentation
+    { LLM_TENSOR_FUSE3_ROUTER,                            "blk.%d.fuse3_router" },
+    { LLM_TENSOR_FUSE3_EXPERT_SCALE,                      "blk.%d.fuse3_expert_scale" },
+    { LLM_TENSOR_FUSE3_EXPERTS_GATE,                      "blk.%d.fuse3_experts.gate" },
+    { LLM_TENSOR_FUSE3_EXPERTS_UP,                        "blk.%d.fuse3_experts.up" },
+    { LLM_TENSOR_FUSE3_EXPERTS_DOWN,                      "blk.%d.fuse3_experts.down" },
     { LLM_TENSOR_SSM_NORM,                               "blk.%d.ssm_norm" },
     { LLM_TENSOR_ATTN_Q_A_NORM,                          "blk.%d.attn_q_a_norm" },
     { LLM_TENSOR_ATTN_KV_A_NORM,                         "blk.%d.attn_kv_a_norm" },
@@ -786,6 +803,13 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_SSM_BETA,                   {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_SSM_G_A,                    {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_SSM_G_B,                    {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_SSM_F,                      {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_SSM_G,                      {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_FUSE3_ROUTER,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_FUSE3_EXPERT_SCALE,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_FUSE3_EXPERTS_GATE,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_FUSE3_EXPERTS_UP,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_FUSE3_EXPERTS_DOWN,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_TIME_MIX_LERP_X,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_TIME_MIX_LN,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_CHANNEL_MIX_LERP_K,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
@@ -976,6 +1000,10 @@ const char * llm_arch_name(llm_arch arch) {
 }
 
 llm_arch llm_arch_from_string(const std::string & name) {
+    // Ling-3.0 GGUFs in the wild use "bailingmoe3" (bloomer010) or "bailing-hybrid"
+    if (name == "bailingmoe3" || name == "bailing-hybrid") {
+        return LLM_ARCH_BAILING_HYBRID;
+    }
     for (const auto & kv : LLM_ARCH_NAMES) { // NOLINT
         if (kv.second == name) {
             return kv.first;
@@ -1011,10 +1039,12 @@ bool llm_arch_is_hybrid(const llm_arch & arch) {
         case LLM_ARCH_GRANITE_HYBRID:
         case LLM_ARCH_LFM2:
         case LLM_ARCH_LFM2MOE:
+        case LLM_ARCH_FUSE3:
         case LLM_ARCH_NEMOTRON_H:
         case LLM_ARCH_NEMOTRON_H_MOE:
         case LLM_ARCH_QWEN3NEXT:
         case LLM_ARCH_KIMI_LINEAR:
+        case LLM_ARCH_BAILING_HYBRID:
         case LLM_ARCH_QWEN35:
         case LLM_ARCH_QWEN35MOE:
         case LLM_ARCH_DEEPSEEK4:
@@ -1070,10 +1100,12 @@ bool llm_arch_supports_sm_tensor(const llm_arch & arch) {
         case LLM_ARCH_GRANITE_HYBRID:
         case LLM_ARCH_LFM2:
         case LLM_ARCH_LFM2MOE:
+        case LLM_ARCH_FUSE3:
         case LLM_ARCH_MINIMAX_M2:
         case LLM_ARCH_MINIMAX_M3:
         case LLM_ARCH_MISTRAL4:
         case LLM_ARCH_KIMI_LINEAR:
+        case LLM_ARCH_BAILING_HYBRID:
             return false;
         default:
             return true;

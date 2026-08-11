@@ -279,6 +279,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_lfm2(params);
         case LLM_ARCH_LFM2MOE:
             return new llama_model_lfm2moe(params);
+        case LLM_ARCH_FUSE3:
+            return new llama_model_fuse3(params);
         case LLM_ARCH_SMALLTHINKER:
             return new llama_model_smallthinker(params);
         case LLM_ARCH_GROVEMOE:
@@ -309,6 +311,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_mimo2(params);
         case LLM_ARCH_KIMI_LINEAR:
             return new llama_model_kimi_linear(params);
+        case LLM_ARCH_BAILING_HYBRID:
+            return new llama_model_bailing_hybrid(params);
         case LLM_ARCH_STEP35:
             return new llama_model_step35(params);
         default:
@@ -2586,6 +2590,11 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
             return LLAMA_ROPE_TYPE_NONE;
 
         // use what we call a normal RoPE, operating on pairs of consecutive head values
+        // bailing-hybrid: config rope_interleave=true. The reference de-interleaves
+        // (view(d/2,2).transpose) before a rotate_half, which is exactly pairwise
+        // rotation in stored order -- i.e. NORM, not the NEOX that DeepSeek-style
+        // MLA normally uses. The non-interleaved branch upstream is a literal 1/0.
+        case LLM_ARCH_BAILING_HYBRID:
         case LLM_ARCH_LLAMA:
         case LLM_ARCH_LLADA:
         case LLM_ARCH_LLAMA4:
@@ -2681,6 +2690,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_HY_V3:
         case LLM_ARCH_LFM2:
         case LLM_ARCH_LFM2MOE:
+        case LLM_ARCH_FUSE3:
         case LLM_ARCH_SMALLTHINKER:
         case LLM_ARCH_SEED_OSS:
         case LLM_ARCH_GROVEMOE:
