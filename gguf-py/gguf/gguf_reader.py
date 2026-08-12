@@ -185,6 +185,7 @@ class GGUFReader:
         self._build_tensors(offs, tensors_fields)
 
     _DT = TypeVar('_DT', bound = npt.DTypeLike)
+    _dtype_cache: dict[tuple[npt.DTypeLike, str], tuple[np.dtype[Any], int, np.dtype[Any]]] = {}
 
     # Fetch a key/value metadata field by key.
     def get_field(self, key: str) -> Union[ReaderField, None]:
@@ -198,10 +199,17 @@ class GGUFReader:
         self, offset: int, dtype: npt.DTypeLike, count: int = 1, override_order: None | Literal['I', 'S', '<'] = None,
     ) -> npt.NDArray[Any]:
         count = int(count)
-        itemsize = int(np.empty([], dtype = dtype).itemsize)
+        order = self.byte_order if override_order is None else override_order
+        cache_key = (dtype, order)
+        if cache_key not in self._dtype_cache:
+            # cache the dtype, its itemsize, and the new byteorder dtype to avoid repeated overhead
+            dt = np.dtype(dtype)
+            self._dtype_cache[cache_key] = (dt, dt.itemsize, dt.newbyteorder(order))
+
+        dt, itemsize, dt_newbyteorder = self._dtype_cache[cache_key]
         end_offs = offset + itemsize * count
-        arr = self.data[offset:end_offs].view(dtype=dtype)[:count]
-        return arr.view(arr.dtype.newbyteorder(self.byte_order if override_order is None else override_order))
+        arr = self.data[offset:end_offs].view(dtype=dt)[:count]
+        return arr.view(dt_newbyteorder)
 
     def _push_field(self, field: ReaderField, skip_sum: bool = False) -> int:
         if field.name in self.fields:
