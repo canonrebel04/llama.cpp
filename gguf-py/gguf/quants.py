@@ -29,14 +29,9 @@ def quant_shape_from_byte_shape(shape: Sequence[int], quant_type: GGMLQuantizati
 def _apply_over_grouped_rows(func: Callable[[np.ndarray], np.ndarray], arr: np.ndarray, otype: DTypeLike, oshape: tuple[int, ...]) -> np.ndarray:
     rows = arr.reshape((-1, arr.shape[-1]))
     assert len(rows.shape)
-    osize = 1
-    for dim in oshape:
-        osize *= dim
-    out = np.empty(shape=osize, dtype=otype)
-    # compute over groups of 16 rows (arbitrary, but seems good for performance)
-    n_groups = (rows.shape[0] // 16) or 1
-    np.concatenate([func(group).ravel() for group in np.array_split(rows, n_groups)], axis=0, out=out)
-    return out.reshape(oshape)
+    # Apply the function over all rows at once to leverage NumPy's C-level vectorization
+    # instead of slow Python-level chunking and concatenation.
+    return func(rows).ravel().astype(otype, copy=False).reshape(oshape)
 
 
 # round away from zero
