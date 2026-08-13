@@ -72,17 +72,13 @@ class ReaderField(NamedTuple):
                 else:
                     # FIXME: When/if _get_field_parts() support multi-dimensional arrays, this must do so too
 
-                    # Check if it's unsafe to perform slice optimization on data
-                    # if any(True for idx in self.data if len(self.parts[idx]) != 1):
-                    #     optim_slice = slice(None)
-                    # else:
-                    #     optim_slice = index_or_slice
-                    #     index_or_slice = slice(None)
-
-                    # if isinstance(optim_slice, int):
-                    #     return self.parts[self.data[optim_slice]].tolist()[0]
-                    # else:
-                    #     return [pv for idx in self.data[optim_slice] for pv in self.parts[idx].tolist()][index_or_slice]
+                    # Fast path for single-chunk array parts (e.g. scalar types loaded via _get_field_parts)
+                    if len(self.data) == 1:
+                        part = self.parts[self.data[0]]
+                        if isinstance(index_or_slice, int):
+                            return part[index_or_slice].item()
+                        else:
+                            return part[index_or_slice].tolist()
 
                     if isinstance(index_or_slice, int):
                         return self.parts[self.data[index_or_slice]].tolist()[0]
@@ -243,15 +239,27 @@ class GGUFReader:
             offs += int(alen.nbytes)
             aparts: list[npt.NDArray[Any]] = [raw_itype, alen]
             data_idxs: list[int] = []
-            # FIXME: Handle multi-dimensional arrays properly instead of flattening
-            for idx in range(alen[0]):
-                curr_size, curr_parts, curr_idxs, curr_types = self._get_field_parts(offs, raw_itype[0])
-                if idx == 0:
-                    types += curr_types
-                idxs_offs = len(aparts)
-                aparts += curr_parts
-                data_idxs += (idx + idxs_offs for idx in curr_idxs)
-                offs += curr_size
+
+            itype = GGUFValueType(raw_itype[0])
+            nptype = self.gguf_scalar_to_np.get(itype)
+
+            # Fast path for flat arrays of scalar types
+            if nptype is not None:
+                val = self._get(offs, nptype, alen[0])
+                types.append(itype)
+                aparts.append(val)
+                data_idxs = [2]  # Index of val in aparts
+                offs += int(val.nbytes)
+            else:
+                # FIXME: Handle multi-dimensional arrays properly instead of flattening
+                for idx in range(alen[0]):
+                    curr_size, curr_parts, curr_idxs, curr_types = self._get_field_parts(offs, raw_itype[0])
+                    if idx == 0:
+                        types += curr_types
+                    idxs_offs = len(aparts)
+                    aparts += curr_parts
+                    data_idxs += (idx + idxs_offs for idx in curr_idxs)
+                    offs += curr_size
             return offs - orig_offs, aparts, data_idxs, types
         # We can't deal with this one.
         raise ValueError(f'Unknown/unhandled field type {gtype}')
