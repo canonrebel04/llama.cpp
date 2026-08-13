@@ -85,14 +85,15 @@ class ReaderField(NamedTuple):
                     #     return [pv for idx in self.data[optim_slice] for pv in self.parts[idx].tolist()][index_or_slice]
 
                     if isinstance(index_or_slice, int):
-                        return self.parts[self.data[index_or_slice]].tolist()[0]
+                        return self.parts[self.data[index_or_slice]].item()
                     else:
-                        return [pv for idx in self.data[index_or_slice] for pv in self.parts[idx].tolist()]
+                        # self.parts[idx] is a single-element numpy array for non-string types
+                        return [self.parts[idx].item() for idx in self.data[index_or_slice]]
 
             if main_type == GGUFValueType.STRING:
                 return to_string(self.parts[-1])
             else:
-                return self.parts[-1].tolist()[0]
+                return self.parts[-1].item()
 
         return None
 
