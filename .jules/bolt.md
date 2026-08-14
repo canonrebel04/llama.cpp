@@ -1,0 +1,3 @@
+## 2024-05-24 - Avoid np.empty().itemsize and array slicing for memory maps
+**Learning:** In highly loop-sensitive code like GGUF metadata parsing, computing `int(np.empty([], dtype).itemsize)` and instantiating memory slices like `data[offset:end].view()` creates massive allocation overhead compared to caching itemsizes via `np.dtype(dtype).itemsize` and constructing arrays directly using `np.ndarray(..., buffer=data, offset=...)`.
+**Action:** Always prefer direct `np.ndarray` constructors with buffers and cached `np.dtype` properties over temporary arrays and slice creation when parsing large binary blocks or working with memory maps.
