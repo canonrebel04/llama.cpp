@@ -1,0 +1,3 @@
+## 2025-02-28 - Avoid array slicing and empty array initialization for struct-like metadata parsing
+**Learning:** `np.empty([], dtype).itemsize` is surprisingly slow in Python due to allocation overhead in tight loops (e.g. metadata parsing millions of times). Array slicing with `view` on a large `np.memmap` (e.g. `self.data[offset:end_offs].view(dtype)[:count]`) also adds significant overhead.
+**Action:** Cache static values like `np.dtype(dtype).itemsize` instead of instantiating an empty array to find the itemsize. Use `np.ndarray((count,), dtype=dtype, buffer=self.data, offset=offset)` to directly read the underlying memmap buffer, avoiding slicing overhead.
