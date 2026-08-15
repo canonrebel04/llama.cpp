@@ -1,3 +1,0 @@
-## 2024-05-18 - Fast Array Initialization in NumPy
-**Learning:** Found array initialization loops inside NumPy array constructors `np.array([i for i in range(...)])` inside operations like shifting inside `gguf-py/gguf/quants.py`. While Python list comprehension followed by `np.array()` creation works, it is slower than natively instantiating arrays with `np.arange()`. In hot paths like dequantization blocks (where thousands/millions of arrays might be processed), this can add measurable overhead.
-**Action:** Replace `np.array([i for i in range(...)])` with native `np.arange(...)` equivalent inside `gguf/quants.py`.
