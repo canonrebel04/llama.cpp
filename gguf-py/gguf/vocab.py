@@ -46,6 +46,8 @@ from .gguf_writer import GGUFWriter
 
 logger = logging.getLogger(__name__)
 
+_KEY_BYTE_MATCH = re.compile(br"<0x[0-9A-Fa-f]{2}>")
+
 
 class SpecialVocab:
     merges: list[str]
@@ -197,14 +199,12 @@ class SpecialVocab:
                         # TODO: internally store as the new format instead of converting to old
                         if any(' ' in s for pair in merges for s in pair):
                             logger.warning(f'Spaces in merges detected, encoding as {chr(ord(" ") + 256)!r}')
+                        _space = chr(ord(' ') + 256)
                         self.merges = [
                             ' '.join(
                                 [
                                     # ensure the spaces are properly encoded
-                                    ''.join(
-                                        chr(ord(c) + 256) if c == ' ' else c
-                                        for c in part
-                                    )
+                                    part.replace(' ', _space)
                                     for part in pair
                                 ]
                             )
@@ -635,7 +635,7 @@ class LlamaHfVocab(Vocab):
 
     def get_token_type(self, token_id: int, token_text: bytes, special_ids: set[int]) -> gguf.TokenType:
         # Special case for byte tokens
-        if re.fullmatch(br"<0x[0-9A-Fa-f]{2}>", token_text):
+        if _KEY_BYTE_MATCH.fullmatch(token_text):
             return gguf.TokenType.BYTE
 
         # Determine token type based on whether it's a special token
@@ -919,11 +919,12 @@ class MistralVocab(Vocab):
             for val in merge_pairs
         ]
 
+        _space = chr(ord(' ') + 256)
         merges = [
             " ".join(
                 [
                     # ensure the spaces are properly encoded
-                    "".join(chr(ord(c) + 256) if c == " " else c for c in part)
+                    part.replace(" ", _space)
                     for part in pair
                 ]
             )

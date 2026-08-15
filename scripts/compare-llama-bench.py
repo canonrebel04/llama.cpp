@@ -461,17 +461,25 @@ class LlamaBenchDataJSONL(LlamaBenchDataSQLite3):
         # Get the appropriate field list based on tool
         db_fields = LLAMA_BENCH_DB_FIELDS if tool == "llama-bench" else TEST_BACKEND_OPS_DB_FIELDS
 
+        from collections import defaultdict
+
+        db_fields_set = set(db_fields)
+        groups = defaultdict(list)
+
         with open(data_file, "r", encoding="utf-8") as fp:
             for i, line in enumerate(fp):
                 parsed = json.loads(line)
 
-                for k in parsed.keys() - set(db_fields):
+                for k in parsed.keys() - db_fields_set:
                     del parsed[k]
 
                 if (missing_keys := self._check_keys(parsed.keys())):
                     raise RuntimeError(f"Missing required data key(s) at line {i + 1}: {', '.join(missing_keys)}")
 
-                self.cursor.execute(f"INSERT INTO {self.table_name}({', '.join(parsed.keys())}) VALUES({', '.join('?' * len(parsed))});", tuple(parsed.values()))
+                groups[tuple(parsed.keys())].append(tuple(parsed.values()))
+
+        for keys, values in groups.items():
+            self.cursor.executemany(f"INSERT INTO {self.table_name}({', '.join(keys)}) VALUES({', '.join('?' * len(keys))});", values)
 
         self._builds_init()
 
@@ -496,18 +504,25 @@ class LlamaBenchDataJSON(LlamaBenchDataSQLite3):
         # Get the appropriate field list based on tool
         db_fields = LLAMA_BENCH_DB_FIELDS if tool == "llama-bench" else TEST_BACKEND_OPS_DB_FIELDS
 
+        from collections import defaultdict
+
+        db_fields_set = set(db_fields)
         for data_file in data_files:
             with open(data_file, "r", encoding="utf-8") as fp:
                 parsed = json.load(fp)
 
+                groups = defaultdict(list)
                 for i, entry in enumerate(parsed):
-                    for k in entry.keys() - set(db_fields):
+                    for k in entry.keys() - db_fields_set:
                         del entry[k]
 
                     if (missing_keys := self._check_keys(entry.keys())):
                         raise RuntimeError(f"Missing required data key(s) at entry {i + 1}: {', '.join(missing_keys)}")
 
-                    self.cursor.execute(f"INSERT INTO {self.table_name}({', '.join(entry.keys())}) VALUES({', '.join('?' * len(entry))});", tuple(entry.values()))
+                    groups[tuple(entry.keys())].append(tuple(entry.values()))
+
+                for keys, values in groups.items():
+                    self.cursor.executemany(f"INSERT INTO {self.table_name}({', '.join(keys)}) VALUES({', '.join('?' * len(keys))});", values)
 
         self._builds_init()
 
@@ -534,18 +549,25 @@ class LlamaBenchDataCSV(LlamaBenchDataSQLite3):
         # Get the appropriate field list based on tool
         db_fields = LLAMA_BENCH_DB_FIELDS if tool == "llama-bench" else TEST_BACKEND_OPS_DB_FIELDS
 
+        from collections import defaultdict
+
+        db_fields_set = set(db_fields)
         for data_file in data_files:
             with open(data_file, "r", encoding="utf-8") as fp:
+                groups = defaultdict(list)
                 for i, parsed in enumerate(csv.DictReader(fp)):
                     keys = set(parsed.keys())
 
-                    for k in keys - set(db_fields):
+                    for k in keys - db_fields_set:
                         del parsed[k]
 
                     if (missing_keys := self._check_keys(keys)):
                         raise RuntimeError(f"Missing required data key(s) at line {i + 1}: {', '.join(missing_keys)}")
 
-                    self.cursor.execute(f"INSERT INTO {self.table_name}({', '.join(parsed.keys())}) VALUES({', '.join('?' * len(parsed))});", tuple(parsed.values()))
+                    groups[tuple(parsed.keys())].append(tuple(parsed.values()))
+
+                for keys, values in groups.items():
+                    self.cursor.executemany(f"INSERT INTO {self.table_name}({', '.join(keys)}) VALUES({', '.join('?' * len(keys))});", values)
 
         self._builds_init()
 

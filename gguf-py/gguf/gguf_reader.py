@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 from collections import OrderedDict
@@ -70,6 +71,14 @@ class ReaderField(NamedTuple):
                     else:
                         return [to_string(self.parts[idx]) for idx in indices] # type: ignore
                 else:
+                    # Fast path for single-chunk array parts (e.g. scalar arrays via _get_field_parts)
+                    if len(self.data) == 1:
+                        part = self.parts[self.data[0]]
+                        if isinstance(index_or_slice, int):
+                            return part[index_or_slice].item()
+                        else:
+                            return part[index_or_slice].tolist()
+
                     # FIXME: When/if _get_field_parts() support multi-dimensional arrays, this must do so too
 
                     # Check if it's unsafe to perform slice optimization on data
@@ -85,14 +94,15 @@ class ReaderField(NamedTuple):
                     #     return [pv for idx in self.data[optim_slice] for pv in self.parts[idx].tolist()][index_or_slice]
 
                     if isinstance(index_or_slice, int):
-                        return self.parts[self.data[index_or_slice]].tolist()[0]
+                        return self.parts[self.data[index_or_slice]].item()
                     else:
-                        return [pv for idx in self.data[index_or_slice] for pv in self.parts[idx].tolist()]
+                        # self.parts[idx] is a single-element numpy array for non-string types
+                        return [self.parts[idx].item() for idx in self.data[index_or_slice]]
 
             if main_type == GGUFValueType.STRING:
                 return to_string(self.parts[-1])
             else:
-                return self.parts[-1].tolist()[0]
+                return self.parts[-1].item()
 
         return None
 
@@ -198,10 +208,14 @@ class GGUFReader:
         self, offset: int, dtype: npt.DTypeLike, count: int = 1, override_order: None | Literal['I', 'S', '<'] = None,
     ) -> npt.NDArray[Any]:
         count = int(count)
-        itemsize = int(np.empty([], dtype = dtype).itemsize)
-        end_offs = offset + itemsize * count
-        arr = self.data[offset:end_offs].view(dtype=dtype)[:count]
-        return arr.view(arr.dtype.newbyteorder(self.byte_order if override_order is None else override_order))
+        # Performance optimization: use np.dtype to get itemsize instead of creating an empty array
+        dt = np.dtype(dtype)
+        end_offs = offset + dt.itemsize * count
+        arr = self.data[offset:end_offs].view(dtype=dt)[:count]
+        order = self.byte_order if override_order is None else override_order
+        if order == 'I':
+            return arr
+        return arr.view(arr.dtype.newbyteorder(order))
 
     def _push_field(self, field: ReaderField, skip_sum: bool = False) -> int:
         if field.name in self.fields:
@@ -243,9 +257,24 @@ class GGUFReader:
             offs += int(alen.nbytes)
             aparts: list[npt.NDArray[Any]] = [raw_itype, alen]
             data_idxs: list[int] = []
+
+            itype = raw_itype[0]
+            array_gtype = GGUFValueType(itype)
+            nptype = self.gguf_scalar_to_np.get(array_gtype)
+            count = int(alen[0])
+
+            # Fast path for flat arrays of scalar types: read the whole array with a single _get() call
+            if nptype is not None and count > 0:
+                types.append(array_gtype)
+                val = self._get(offs, nptype, count)
+                aparts.append(val)
+                data_idxs = [2]  # index of val within aparts; survives the idxs_offs shift in _build_fields
+                offs += int(val.nbytes)
+                return offs - orig_offs, aparts, data_idxs, types
+
             # FIXME: Handle multi-dimensional arrays properly instead of flattening
-            for idx in range(alen[0]):
-                curr_size, curr_parts, curr_idxs, curr_types = self._get_field_parts(offs, raw_itype[0])
+            for idx in range(count):
+                curr_size, curr_parts, curr_idxs, curr_types = self._get_field_parts(offs, itype)
                 if idx == 0:
                     types += curr_types
                 idxs_offs = len(aparts)
@@ -326,8 +355,10 @@ class GGUFReader:
                 raise ValueError(f'Found duplicated tensor with name {tensor_name}')
             tensor_names.add(tensor_name)
             ggml_type = GGMLQuantizationType(raw_dtype[0])
-            n_elems = int(np.prod(dims))
-            np_dims = tuple(reversed(dims.tolist()))
+            # math.prod is ~2x faster than np.prod for small shape tuples
+            dims_list = dims.tolist()
+            n_elems = math.prod(dims_list)
+            np_dims = tuple(reversed(dims_list))
             block_size, type_size = GGML_QUANT_SIZES[ggml_type]
             n_bytes = n_elems * type_size // block_size
             data_offs = int(start_offs + offset_tensor[0])
