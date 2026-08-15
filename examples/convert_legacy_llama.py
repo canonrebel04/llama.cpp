@@ -1075,11 +1075,8 @@ def per_model_weight_count_estimation(tensors: Iterable[tuple[str, LazyTensor]])
             continue
 
         # Got A Tensor
-        sum_weights_in_tensor: int = 1
-
         # Tensor Volume
-        for dim in lazy_tensor.shape:
-            sum_weights_in_tensor *= dim
+        sum_weights_in_tensor: int = math.prod(lazy_tensor.shape)
 
         if ".experts." in name:
             if ".experts.0." in name:

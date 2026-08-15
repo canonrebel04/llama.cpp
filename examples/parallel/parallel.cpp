@@ -433,9 +433,6 @@ int main(int argc, char ** argv) {
                     continue;
                 }
 
-                //printf("client %d, seq %d, token %d, pos %d, batch %d\n",
-                //        client.id, client.seq_id, client.sampled, client.n_decoded, client.i_batch);
-
                 const llama_token id = common_sampler_sample(client.smpl, ctx, client.i_batch - i);
 
                 common_sampler_accept(client.smpl, id, true);
@@ -450,9 +447,6 @@ int main(int argc, char ** argv) {
 
                 client.response += token_str;
                 client.sampled = id;
-
-                //printf("client %d, seq %d, token %d, pos %d, batch %d: %s\n",
-                //        client.id, client.seq_id, id, client.n_decoded, client.i_batch, token_str.c_str());
 
                 if (client.n_decoded > 2 &&
                     (llama_vocab_is_eog(vocab, id) ||

@@ -1116,8 +1116,7 @@ const func_builtins & value_array_t::get_builtins() const {
             value val_reverse = args.get_kwarg_or_pos("reverse",        1);
             value val_case    = args.get_kwarg_or_pos("case_sensitive", 2);
             value attribute   = args.get_kwarg_or_pos("attribute",      3);
-            // FIXME: sorting is currently always case sensitive
-            //const bool case_sensitive = val_case->as_bool(); // undefined == false
+            const bool case_sensitive = val_case->is_undefined() ? false : val_case->as_bool();
             const bool reverse = val_reverse->as_bool(); // undefined == false
             const bool attr_is_int = is_val<value_int>(attribute);
             const int64_t attr_int = attr_is_int ? attribute->as_int() : 0;
@@ -1136,7 +1135,7 @@ const func_builtins & value_array_t::get_builtins() const {
                         throw raised_exception("sort: unsupported object attribute comparison between " + a->type() + " and " + b->type());
                     }
                 }
-                return value_compare(val_a, val_b, reverse ? value_compare_op::gt : value_compare_op::lt);
+                return value_compare(val_a, val_b, reverse ? value_compare_op::gt : value_compare_op::lt, case_sensitive);
             });
             return is_val<value_tuple>(val) ? mk_val<value_tuple>(std::move(arr)) : mk_val<value_array>(std::move(arr));
         }},
@@ -1155,15 +1154,14 @@ const func_builtins & value_array_t::get_builtins() const {
             if (!attribute->is_undefined()) {
                 throw not_implemented_exception("min: attribute not implemented");
             }
-            // FIXME: min is currently always case sensitive
-            (void) val_case;
+            const bool case_sensitive = val_case->is_undefined() ? false : val_case->as_bool();
             const auto & arr = args.get_pos(0)->as_array();
             if (arr.empty()) {
                 return mk_val<value_undefined>();
             }
             value result = arr[0];
             for (size_t i = 1; i < arr.size(); ++i) {
-                if (value_compare(arr[i], result, value_compare_op::lt)) {
+                if (value_compare(arr[i], result, value_compare_op::lt, case_sensitive)) {
                     result = arr[i];
                 }
             }
@@ -1177,15 +1175,14 @@ const func_builtins & value_array_t::get_builtins() const {
             if (!attribute->is_undefined()) {
                 throw not_implemented_exception("max: attribute not implemented");
             }
-            // FIXME: max is currently always case sensitive
-            (void) val_case;
+            const bool case_sensitive = val_case->is_undefined() ? false : val_case->as_bool();
             const auto & arr = args.get_pos(0)->as_array();
             if (arr.empty()) {
                 return mk_val<value_undefined>();
             }
             value result = arr[0];
             for (size_t i = 1; i < arr.size(); ++i) {
-                if (value_compare(arr[i], result, value_compare_op::gt)) {
+                if (value_compare(arr[i], result, value_compare_op::gt, case_sensitive)) {
                     result = arr[i];
                 }
             }
@@ -1277,16 +1274,15 @@ const func_builtins & value_object_t::get_builtins() const {
             value val_case    = args.get_kwarg_or_pos("case_sensitive", 1);
             value val_by      = args.get_kwarg_or_pos("by",             2);
             value val_reverse = args.get_kwarg_or_pos("reverse",        3);
-            // FIXME: sorting is currently always case sensitive
-            //const bool case_sensitive = val_case->as_bool(); // undefined == false
+            const bool case_sensitive = val_case->is_undefined() ? false : val_case->as_bool();
             const bool reverse = val_reverse->as_bool(); // undefined == false
             const bool by_value = is_val<value_string>(val_by) && val_by->as_string().str() == "value" ? true : false;
             auto result = mk_val<value_object>(val_input); // copy
             std::sort(result->val_obj.begin(), result->val_obj.end(), [&](const auto & a, const auto & b) {
                 if (by_value) {
-                    return value_compare(a.second, b.second, reverse ? value_compare_op::gt : value_compare_op::lt);
+                    return value_compare(a.second, b.second, reverse ? value_compare_op::gt : value_compare_op::lt, case_sensitive);
                 } else {
-                    return value_compare(a.first, b.first, reverse ? value_compare_op::gt : value_compare_op::lt);
+                    return value_compare(a.first, b.first, reverse ? value_compare_op::gt : value_compare_op::lt, case_sensitive);
                 }
             });
             return result;
@@ -1388,7 +1384,7 @@ static value from_json(const nlohmann::ordered_json & j, bool mark_input) {
 }
 
 // compare operator for value_t
-bool value_compare(const value & a, const value & b, value_compare_op op) {
+bool value_compare(const value & a, const value & b, value_compare_op op, bool case_sensitive) {
     auto cmp = [&]() {
         // compare numeric types
         if ((is_val<value_int>(a) || is_val<value_float>(a)) &&
@@ -1415,16 +1411,24 @@ bool value_compare(const value & a, const value & b, value_compare_op op) {
             (is_val<value_string>(a) && (is_val<value_int>(b) || is_val<value_float>(b))) ||
             (is_val<value_string>(a) && is_val<value_string>(b))) {
             try {
+                std::string str_a = a->as_string().str();
+                std::string str_b = b->as_string().str();
+
+                if (!case_sensitive && is_val<value_string>(a) && is_val<value_string>(b)) {
+                    std::transform(str_a.begin(), str_a.end(), str_a.begin(), ::tolower);
+                    std::transform(str_b.begin(), str_b.end(), str_b.begin(), ::tolower);
+                }
+
                 if (op == value_compare_op::eq) {
-                    return a->as_string().str() == b->as_string().str();
+                    return str_a == str_b;
                 } else if (op == value_compare_op::ge) {
-                    return a->as_string().str() >= b->as_string().str();
+                    return str_a >= str_b;
                 } else if (op == value_compare_op::gt) {
-                    return a->as_string().str() > b->as_string().str();
+                    return str_a > str_b;
                 } else if (op == value_compare_op::lt) {
-                    return a->as_string().str() < b->as_string().str();
+                    return str_a < str_b;
                 } else if (op == value_compare_op::ne) {
-                    return a->as_string().str() != b->as_string().str();
+                    return str_a != str_b;
                 } else {
                     throw std::runtime_error("Unsupported comparison operator for string/number types");
                 }

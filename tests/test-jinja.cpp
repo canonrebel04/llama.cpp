@@ -2618,4 +2618,16 @@ static void test_fuzzing(testing & t) {
                 {{"data", std::string("hello\xfe\xffworld")}}
             ));
     });
+
+    t.test("case_sensitive sorting and min max", [&](testing & t) {
+        test_template(t, "max default", "{{ ['A', 'b', 'C']|max }}", json::object(), "C");
+        test_template(t, "max case_sensitive", "{{ ['A', 'b', 'C']|max(case_sensitive=true) }}", json::object(), "b");
+
+        test_template(t, "min default", "{{ ['a', 'B', 'c']|min }}", json::object(), "a");
+        test_template(t, "min case_sensitive", "{{ ['a', 'B', 'c']|min(case_sensitive=true) }}", json::object(), "B");
+
+        test_template(t, "sort default", "{{ ['A', 'b', 'C']|sort }}", json::object(), "AbC");
+        test_template(t, "sort case_sensitive", "{{ ['A', 'b', 'C']|sort(case_sensitive=true) }}", json::object(), "ACb");
+    });
+
 }
