@@ -201,15 +201,8 @@ class GGUFReader:
         np_dtype = np.dtype(dtype)
         itemsize = np_dtype.itemsize
         end_offs = offset + itemsize * count
-        order = self.byte_order if override_order is None else override_order
-        final_dtype = np_dtype.newbyteorder(order)
-        # Slicing the memmap and then taking a view is slow because it creates a new memmap object.
-        # Direct construction of an ndarray from the buffer avoids this overhead.
-        if isinstance(self.data, np.memmap):
-            return np.ndarray(shape=(count,), dtype=final_dtype, buffer=self.data, offset=offset)
-        else:
-            arr = self.data[offset:end_offs].view(dtype=final_dtype)[:count]
-            return arr
+        arr = self.data[offset:end_offs].view(dtype=np_dtype)[:count]
+        return arr.view(arr.dtype.newbyteorder(self.byte_order if override_order is None else override_order))
 
     def _push_field(self, field: ReaderField, skip_sum: bool = False) -> int:
         if field.name in self.fields:

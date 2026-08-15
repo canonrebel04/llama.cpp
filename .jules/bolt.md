@@ -1,3 +1,3 @@
 ## 2026-08-11 - Fast reads from Numpy memmap
-**Learning:** In NumPy, calling `.view()` on a memory-mapped array slice creates a new memmap object behind the scenes, triggering expensive `__array_finalize__` and `__getitem__` overheads.
-**Action:** For performance-critical code reading small chunks from a memmap, construct an `np.ndarray` directly using `buffer=self.data` and `offset=...` rather than slicing and viewing the memmap.
+**Learning:** In NumPy, slicing and viewing a memory-mapped array is a slow operation due to object recreation. However, using `np.ndarray(buffer=...)` directly on a memmap fails with a `ValueError` for unaligned offsets, which happen frequently when reading packed data like GGUF KV pairs.
+**Action:** Use `np.dtype(dtype).itemsize` for efficient item size calculation, but stick to `.view(dtype=...)` for slicing to safely handle unaligned offsets.
