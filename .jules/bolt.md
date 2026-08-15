@@ -1,3 +1,3 @@
 ## 2024-08-15 - Optimizing np.memmap reads
-**Learning:** In `gguf-py`, when reading binary data from `np.memmap`, using `np.empty([], dtype=dtype).itemsize` and array slicing (`data[start:end].view()`) has significant overhead. Constructing arrays directly with `np.ndarray(..., buffer=data, offset=...)` avoids empty allocations and view overhead.
-**Action:** When extracting sub-arrays from `memmap` objects, always use `np.ndarray(..., buffer=memmap_data, offset=...)` and cache `np.dtype(dtype).itemsize` rather than slicing and viewing.
+**Learning:** In `gguf-py`, when reading binary data from `np.memmap`, using `np.ndarray(..., buffer=data, offset=...)` throws a `ValueError` if the offset is not aligned with the dtype's itemsize. GGUF packs KV pairs back-to-back without alignment padding, so unaligned offsets occur in real files. `np.empty([], dtype=dtype).itemsize` has significant overhead.
+**Action:** To optimize `itemsize` extraction without hitting unaligned offset errors, use `np.dtype(dtype).itemsize` instead of instantiating an empty array, but keep the safe slicing and `.view()` idiom for `memmap` data extraction.
