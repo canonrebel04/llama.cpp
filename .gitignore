@@ -154,3 +154,4 @@ a.out.*
 AGENTS.local.md
 .pi/SYSTEM.md
 examples/llama-eval/venv/
+venv/
