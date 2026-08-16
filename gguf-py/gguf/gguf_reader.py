@@ -140,7 +140,8 @@ class GGUFReader:
     }
 
     def __init__(self, path: os.PathLike[str] | str, mode: Literal['r', 'r+', 'c'] = 'r'):
-        self.data = np.memmap(path, mode = mode)
+        # PERFORMANCE OPTIMIZATION: Bypass numpy.memmap overhead by converting to ndarray
+        self.data = np.memmap(path, mode = mode).view(type=np.ndarray)
         offs = 0
 
         # Check for GGUF magic
