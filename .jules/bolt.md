@@ -1,0 +1,3 @@
+## 2024-05-14 - Optimize memmap array slicing in GGUFReader
+**Learning:** In `gguf-py`, `numpy.memmap` introduces significant overhead during repeated array slicing due to `__array_finalize__` and `__getitem__`. To optimize metadata reading (e.g., in `GGUFReader`), convert the loaded `memmap` directly to an `ndarray` via `.view(type=np.ndarray)` upon initialization to bypass this class overhead while preserving zero-copy behavior.
+**Action:** In `gguf-py/gguf/gguf_reader.py`, replace `self.data = np.memmap(path, mode = mode)` with `self.data = np.memmap(path, mode = mode).view(type=np.ndarray)`.
