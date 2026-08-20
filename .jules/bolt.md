@@ -1,0 +1,3 @@
+## 2024-05-24 - Avoid `numpy.memmap` array slicing overhead
+**Learning:** `numpy.memmap` introduces significant overhead during repeated array slicing due to `__array_finalize__` and `__getitem__` overhead. This can make tight loops over memmapped structures like GGUF metadata reading severely bottlenecked by numpy's own subclassing overhead, despite the data itself being zero-copy.
+**Action:** When repeatedly slicing `numpy.memmap` arrays, especially in tight loops, create an `ndarray` view of the loaded `memmap` (e.g., `.view(type=np.ndarray)`) upon initialization and use this view for internal slicing. This bypasses the class overhead while preserving zero-copy behavior.
