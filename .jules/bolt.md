@@ -1,0 +1,3 @@
+## 2025-03-09 - GGUF Reader memmap optimization
+**Learning:** In `gguf-py`, `numpy.memmap` introduces significant overhead during repeated array slicing (used to extract metadata fields) due to `__array_finalize__` and `__getitem__` processing. Because GGUF reading involves iterating over many metadata fields, this per-slice overhead becomes a major bottleneck for large files or many tensors.
+**Action:** Created an `ndarray` view of the `memmap` (`self._fast_data = self.data.view(type=np.ndarray)`) right after initialization. We can then slice this view instead of the raw `memmap`, preserving zero-copy behavior while skipping the class overhead on every metadata read.
