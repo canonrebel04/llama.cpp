@@ -141,6 +141,10 @@ class GGUFReader:
 
     def __init__(self, path: os.PathLike[str] | str, mode: Literal['r', 'r+', 'c'] = 'r'):
         self.data = np.memmap(path, mode = mode)
+        # Performance optimization: numpy.memmap introduces overhead during repeated array slicing
+        # due to __array_finalize__ and __getitem__. Creating an ndarray view bypasses this overhead
+        # while preserving zero-copy behavior.
+        self._fast_data = self.data.view(type=np.ndarray)
         offs = 0
 
         # Check for GGUF magic
@@ -211,7 +215,8 @@ class GGUFReader:
         # Performance optimization: use np.dtype to get itemsize instead of creating an empty array
         dt = np.dtype(dtype)
         end_offs = offset + dt.itemsize * count
-        arr = self.data[offset:end_offs].view(dtype=dt)[:count]
+        # Performance optimization: use _fast_data (ndarray view) instead of memmap directly to avoid slicing overhead
+        arr = self._fast_data[offset:end_offs].view(dtype=dt)[:count]
         order = self.byte_order if override_order is None else override_order
         if order == 'I':
             return arr
