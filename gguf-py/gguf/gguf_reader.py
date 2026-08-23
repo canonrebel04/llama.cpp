@@ -198,7 +198,7 @@ class GGUFReader:
         self, offset: int, dtype: npt.DTypeLike, count: int = 1, override_order: None | Literal['I', 'S', '<'] = None,
     ) -> npt.NDArray[Any]:
         count = int(count)
-        itemsize = int(np.empty([], dtype = dtype).itemsize)
+        itemsize = int(np.dtype(dtype).itemsize)
         end_offs = offset + itemsize * count
         arr = self.data[offset:end_offs].view(dtype=dtype)[:count]
         return arr.view(arr.dtype.newbyteorder(self.byte_order if override_order is None else override_order))
@@ -212,7 +212,7 @@ class GGUFReader:
             # self.fields[field.name + '_{}'.format(field.offset)] = field
         else:
             self.fields[field.name] = field
-        return 0 if skip_sum else sum(int(part.nbytes) for part in field.parts)
+        return 0 if skip_sum else sum(part.nbytes for part in field.parts)
 
     def _get_str(self, offset: int) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint8]]:
         slen = self._get(offset, np.uint64)
@@ -228,7 +228,7 @@ class GGUFReader:
         # Handle strings.
         if gtype == GGUFValueType.STRING:
             sparts: list[npt.NDArray[Any]] = list(self._get_str(offs))
-            size = sum(int(part.nbytes) for part in sparts)
+            size = sum(part.nbytes for part in sparts)
             return size, sparts, [1], types
         # Check if it's a simple scalar type.
         nptype = self.gguf_scalar_to_np.get(gtype)
@@ -311,7 +311,7 @@ class GGUFReader:
         tensor_fields = []
         for _ in range(count):
             field = self._get_tensor_info_field(offs)
-            offs += sum(int(part.nbytes) for part in field.parts)
+            offs += sum(part.nbytes for part in field.parts)
             tensor_fields.append(field)
         return offs, tensor_fields
 
