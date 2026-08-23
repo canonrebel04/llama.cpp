@@ -1,0 +1,3 @@
+## 2024-05-18 - Fast memmap slicing in gguf-py
+**Learning:** `numpy.memmap` has significantly more overhead than a standard `numpy.ndarray` when slicing elements iteratively. This becomes a major bottleneck when reading many metadata fields from large GGUF files in `gguf-py/gguf/gguf_reader.py`.
+**Action:** When initializing a `memmap` array that will be repeatedly sliced or indexed into (like in `GGUFReader`), create an `ndarray` view of it (`self._fast_data = self.data.view(type=np.ndarray)`) and perform slicing operations on that view to bypass the `memmap` subclass overhead while maintaining zero-copy mapping.
