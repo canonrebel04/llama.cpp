@@ -20,6 +20,9 @@ struct llama_cparams {
 
     int32_t  nextn_layer_offset = 0;
 
+    enum llama_moe_cache_mode moe_cache_mode;
+    size_t moe_cache_budget_mib;
+
     float rope_freq_base;
     float rope_freq_scale;
 
@@ -34,6 +37,7 @@ struct llama_cparams {
     bool embeddings;
     bool embeddings_nextn;        // also extract the hidden state before the final output norm
     bool embeddings_nextn_masked; // extract for only rows where batch.logits != 0
+    bool mtp_chain;               // DECODER_MTP: chain rows in-graph from the first row's inputs
     bool causal_attn;
     bool offload_kqv;
     bool flash_attn;

@@ -13,6 +13,12 @@
 #include <cmath>
 
 extern "C" {
+// Declaration only. The definition lives in ggml-turbo-quant.c (libggml-base).
+// Without `extern` this is a second definition in libggml-cpu, so the SET_ROWS
+// handler here and the quantizer there operate on different variables. Whether
+// the two happen to unify is a property of the platform's symbol resolution
+// (ELF interposition may merge them; two-level-namespace and DLL targets will
+// not), which made the group-size propagation silently link-order dependent.
 GGML_API int turbo3_cpu_wht_group_size;
 }
 
@@ -1129,6 +1135,9 @@ void ggml_compute_forward_add1(
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_Q8_1:
+        case GGML_TYPE_Q8_CR:
+        case GGML_TYPE_Q5_CR:
+        case GGML_TYPE_Q6_CR:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
         case GGML_TYPE_Q2_K:
@@ -1262,6 +1271,9 @@ void ggml_compute_forward_acc(
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_Q8_1:
+        case GGML_TYPE_Q8_CR:
+        case GGML_TYPE_Q5_CR:
+        case GGML_TYPE_Q6_CR:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
         case GGML_TYPE_Q2_K:
@@ -5043,6 +5055,9 @@ void ggml_compute_forward_get_rows(
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_Q8_1:
+        case GGML_TYPE_Q8_CR:
+        case GGML_TYPE_Q5_CR:
+        case GGML_TYPE_Q6_CR:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
         case GGML_TYPE_Q2_K:
@@ -5081,7 +5096,10 @@ void ggml_compute_forward_get_rows(
             } break;
         default:
             {
-                GGML_ABORT("fatal error");
+                GGML_ABORT("unsupported GET_ROWS source %s: type = %d (%s), ne = [%lld, %lld, %lld, %lld], nb01 = %zu",
+                           src0->name, src0->type, ggml_type_name(src0->type),
+                           (long long) src0->ne[0], (long long) src0->ne[1],
+                           (long long) src0->ne[2], (long long) src0->ne[3], src0->nb[1]);
             }
     }
 
@@ -5804,6 +5822,9 @@ void ggml_compute_forward_clamp(
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_Q8_1:
+        case GGML_TYPE_Q8_CR:
+        case GGML_TYPE_Q5_CR:
+        case GGML_TYPE_Q6_CR:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
         case GGML_TYPE_Q2_K:

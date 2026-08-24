@@ -627,7 +627,8 @@ template <typename T> struct block_reduce_policy<block_reduce_method::MAX, T> {
 };
 
 template <block_reduce_method reduce_method_t, const unsigned int block_size_template = 0, typename T>
-static __device__ T block_reduce(T val, T * shared_vals) {
+static __device__ T block_reduce(T val, [[maybe_unused]] T * shared_vals) {
+    // for multi-warp reductions, callers must not reuse shared_vals until all reads from this invocation have completed
     val                           = block_reduce_policy<reduce_method_t, T>::reduce(val);
     const unsigned int block_size = block_size_template == 0 ? blockDim.x : block_size_template;
     if (block_size > WARP_SIZE) {
@@ -1425,6 +1426,14 @@ struct ggml_backend_cuda_context {
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES] = {nullptr};
 
     int curr_stream_no = 0;
+
+    // [TAG_FA_F16_CUDA_GRAPHS] Set once per compute call in ggml_backend_cuda_graph_compute: true
+    // when the current cgraph is graph-enabled AND graph-compatible (i.e. it will be captured).
+    // On HIP the flash-attention launcher reads this to place its f16 KV-dequant temp buffers in the
+    // capture-safe memory pool instead of raw cudaMalloc/cudaFree, which are illegal while a CUDA
+    // graph is being captured. Left false for graph-incompatible graphs so those keep the raw
+    // release-after-use path (avoids the legacy pool retaining the temp; ref llama.cpp #22107).
+    bool fa_f16_use_pool = false;
 
 #ifdef USE_CUDA_GRAPH
     // Map from first_node_ptr to cuda_graph - allows multiple graphs per context
