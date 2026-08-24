@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from queue import Queue
@@ -921,8 +921,9 @@ class GpqaDataset(BaseDataset):
         rng = random.Random(self.seed)
 
         self.questions = []
-        for _, row in df.iterrows():
-            question = row.to_dict()
+        columns = df.columns.tolist()
+        for row in df.itertuples(index=False, name=None):
+            question = dict(zip(columns, row))
             question["dataset_type"] = "gpqa"
 
             # Shuffle the answer options
@@ -1086,7 +1087,6 @@ Please provide only the extracted answer, nothing else. If there is no clear ans
             ],
             "temperature": 0,
         }
-        #print(json.dumps(data, indent=2))
 
         try:
             response = requests.post(url, headers=headers, json=data)

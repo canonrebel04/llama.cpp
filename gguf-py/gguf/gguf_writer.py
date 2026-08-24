@@ -95,6 +95,7 @@ class GGUFWriter:
         self.use_temp_file = use_temp_file
         self.temp_file = None
         self.tensors = [{}]
+        self.tensors_nbytes = [0]
         self.kv_data = [{}]
         self.split_max_tensors = split_max_tensors
         self.split_max_size = split_max_size
@@ -107,6 +108,7 @@ class GGUFWriter:
 
         if self.small_first_shard:
             self.tensors.append({})
+            self.tensors_nbytes.append(0)
 
         self.add_architecture()
 
@@ -366,11 +368,13 @@ class GGUFWriter:
                 and len(self.tensors[-1]) >= self.split_max_tensors
             ) or (   # split when over size limit
                 self.split_max_size != 0
-                and sum(ti.nbytes for ti in self.tensors[-1].values()) + tensor_nbytes > self.split_max_size
+                and self.tensors_nbytes[-1] + tensor_nbytes > self.split_max_size
             ):
                 self.tensors.append({})
+                self.tensors_nbytes.append(0)
 
         self.tensors[-1][name] = TensorInfo(shape=tensor_shape, dtype=dtype, nbytes=tensor_nbytes)
+        self.tensors_nbytes[-1] += tensor_nbytes
 
     def add_tensor(
         self, name: str, tensor: np.ndarray[Any, Any], raw_shape: Sequence[int] | None = None,
@@ -1461,8 +1465,14 @@ class GGUFWriter:
                     raise ValueError("All items in a GGUF array should be of the same type")
             kv_data += self._pack("I", ltype)
             kv_data += self._pack("Q", len(val))
-            for item in val:
-                kv_data += self._pack_val(item, ltype, add_vtype=False)
+            pack_fmt = self._simple_value_packing.get(ltype)
+            if pack_fmt is not None:
+                # OPTIMIZATION: Use a single struct.pack call for primitive arrays instead of a python loop
+                pack_prefix = '<' if self.endianess == GGUFEndian.LITTLE else '>'
+                kv_data += struct.pack(f"{pack_prefix}{len(val)}{pack_fmt}", *val)
+            else:
+                for item in val:
+                    kv_data += self._pack_val(item, ltype, add_vtype=False)
         else:
             raise ValueError("Invalid GGUF metadata value type or value")
 

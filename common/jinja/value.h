@@ -101,7 +101,7 @@ using func_handler = std::function<func_hptr>;
 using func_builtins = std::map<std::string, func_handler>;
 
 enum value_compare_op { eq, ge, gt, lt, ne };
-bool value_compare(const value & a, const value & b, value_compare_op op);
+bool value_compare(const value & a, const value & b, value_compare_op op, bool case_sensitive = true);
 
 struct value_t {
     int64_t val_int;
