@@ -1765,7 +1765,14 @@ static void ggml_compute_forward_mul_mat_id_impl(
                 }
                 const int32_t i02 = *(const int32_t *) ((const char *) ids->data + iid1*ids->nb[1] + id*ids->nb[0]);
 
-                assert(i02 >= 0 && i02 < n_as);
+                // id == -1 means "expert not owned by this pack" (hot/cold expert
+                // split): contribute a zero row so the pack outputs merge additively
+                if (i02 < 0) {
+                    memset((char *) dst->data + id*dst->nb[1] + iid1*dst->nb[2], 0, dst->ne[0]*sizeof(float));
+                    continue;
+                }
+
+                assert(i02 < n_as);
 
                 if (moe_cache_node && moe_cache_slot_idx[iid1*n_ids + id] >= 0) {
                     const int64_t i11 = id % ne11;

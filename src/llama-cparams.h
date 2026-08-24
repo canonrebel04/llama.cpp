@@ -40,6 +40,7 @@ struct llama_cparams {
     bool mtp_chain;               // DECODER_MTP: chain rows in-graph from the first row's inputs
     bool causal_attn;
     bool offload_kqv;
+    bool sched_async_cpu;
     bool flash_attn;
     bool auto_fa;
     bool fused_lid;          // use fused lightning indexer
