@@ -11,6 +11,7 @@ GGUF_MAGIC             = 0x46554747  # "GGUF"
 GGUF_VERSION           = 3
 GGUF_DEFAULT_ALIGNMENT = 32
 GGML_QUANT_VERSION     = 2  # GGML_QNT_VERSION from ggml.h
+GGML_MAX_DIMS          = 4  # GGML_MAX_DIMS from ggml.h
 
 #
 # metadata keys
@@ -1019,6 +1020,11 @@ class MODEL_TENSOR(IntEnum):
     A_CTC_OUT              = auto()
     A_CTC_OUT_MID          = auto()
     A_ENC_ATTN_REL_POS_EMB = auto()
+    # qwen3tts speaker encoder
+    A_ENC_SE_CONV1         = auto()
+    A_ENC_SE_CONV2         = auto()
+    A_ENC_ASP_ATTN         = auto()
+    A_ENC_ASP_TDNN         = auto()
     # audio qformer projector
     A_QF_PROJ_QUERY        = auto()
     A_QF_PROJ_NORM         = auto()
@@ -1620,6 +1626,11 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.A_CTC_OUT:                 "a.enc_ctc_out",
     MODEL_TENSOR.A_CTC_OUT_MID:             "a.enc_ctc_out_mid",
     MODEL_TENSOR.A_ENC_ATTN_REL_POS_EMB:    "a.blk.{bid}.attn_rel_pos_emb",
+    # qwen3tts speaker encoder
+    MODEL_TENSOR.A_ENC_SE_CONV1:            "a.blk.{bid}.se_conv1",
+    MODEL_TENSOR.A_ENC_SE_CONV2:            "a.blk.{bid}.se_conv2",
+    MODEL_TENSOR.A_ENC_ASP_ATTN:            "a.asp.attn",
+    MODEL_TENSOR.A_ENC_ASP_TDNN:            "a.asp.tdnn",
     # qformer projector
     MODEL_TENSOR.A_QF_PROJ_QUERY:           "a.proj_query",
     MODEL_TENSOR.A_QF_PROJ_NORM:            "a.proj_norm",
