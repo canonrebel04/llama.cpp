@@ -324,6 +324,10 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
 
     // grouped RMSNorm: reduce over one stream, then scale all streams with the [n_embd, hc] gamma
     // the converter folded each gamma to (1 + w)
+    // the CUDA broadcast-mul kernel has no path for an F32 activation times an F16 operand
+    if (w_norm->type != GGML_TYPE_F32) {
+        w_norm = ggml_cast(ctx0, w_norm, GGML_TYPE_F32);
+    }
     ggml_tensor * xn = ggml_mul(ctx0, ggml_rms_norm(ctx0, x, hparams.f_norm_rms_eps), w_norm);
     xn = ggml_reshape_2d(ctx0, xn, hc_dim, nt);
     cb(xn, "hc_norm", il);
