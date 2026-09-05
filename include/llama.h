@@ -416,6 +416,11 @@ extern "C" {
         enum ggml_type type_k; // data type for K cache [EXPERIMENTAL]
         enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]
 
+        // [EXPERIMENTAL] block-granular KV cache streaming: total shared CUDA
+        // arena (compute workspace + resident KV pages + transfer ring), in
+        // MiB. 0 disables streaming.
+        uint32_t kv_stream_arena_mib;
+
         enum llama_moe_cache_mode moe_cache_mode; // runtime MoE expert cache mode
         size_t moe_cache_budget_mib;               // 0 uses the provider's available-memory budget
         size_t moe_cache_size; // device cache in bytes for the experts kept in host memory, split among the devices like the layers, 0 = disabled [EXPERIMENTAL]
@@ -1131,6 +1136,18 @@ extern "C" {
                                 struct llama_context * ctx,
                              enum llama_process_type   type,
                               struct llama_batch_ext * batch);
+    // Describes the role of subsequent llama_decode() batches for
+    // phase-specialized memory allocators. It does not change model math.
+    enum llama_decode_phase {
+        LLAMA_DECODE_PHASE_AUTOMATIC  = 0,
+        LLAMA_DECODE_PHASE_PROMPT     = 1,
+        LLAMA_DECODE_PHASE_GENERATION = 2,
+    };
+
+    // The selected phase remains active until changed. AUTOMATIC preserves
+    // the traditional token-count heuristic for callers without phase state.
+    LLAMA_API void llama_set_decode_phase(
+        struct llama_context * ctx, enum llama_decode_phase phase);
 
     // Set the number of threads used for decoding
     // n_threads is the number of threads used for generation (single token)
