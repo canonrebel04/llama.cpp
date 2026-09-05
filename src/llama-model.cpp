@@ -3349,7 +3349,10 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* offload           */ cparams.offload_kqv,
                             /* unified           */ cparams.kv_unified,
                             /* filter_attn       */ std::move(filter_attn),
-                            /* filter_recr       */ std::move(filter_recr));
+                            /* filter_recr       */ std::move(filter_recr),
+                            /* kv_stream_stage_bytes */ params.kv_stream_stage_bytes,
+                            /* kv_stream_phase_arena */ params.kv_stream_phase_arena,
+                            /* kv_stream_maximum_pool_bytes */ params.kv_stream_maximum_pool_bytes);
                     } else if (needs_mem_idx) {
                         // sparse attention over a per-token indexer cache, in its own memory type
                         res = new llama_memory_hybrid_idx(
@@ -3456,7 +3459,10 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                     mem_other,
                                     filter,
                                     reuse,
-                                    share);
+                                    share,
+                                    params.kv_stream_stage_bytes,
+                                    params.kv_stream_phase_arena,
+                                    params.kv_stream_maximum_pool_bytes);
                         } else {
                             res = new llama_kv_cache_iswa(
                                     *this,
@@ -3473,7 +3479,10 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                     nullptr,
                                     filter,
                                     reuse,
-                                    share);
+                                    share,
+                                    params.kv_stream_stage_bytes,
+                                    params.kv_stream_phase_arena,
+                                    params.kv_stream_maximum_pool_bytes);
                         }
                     } else {
                         GGML_ASSERT(!hparams.is_swa_any());
