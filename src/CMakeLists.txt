@@ -29,7 +29,6 @@ set(LLAMA_CORE_SOURCES
     llama-kv-cache-dsv4.cpp
     llama-kv-stream-config.cpp
     llama-kv-stream-plan.cpp
-    llama-kv-stream-softmax.cpp
     llama-memory.cpp
     llama-moe-cache.cpp
     llama-memory-hybrid.cpp
