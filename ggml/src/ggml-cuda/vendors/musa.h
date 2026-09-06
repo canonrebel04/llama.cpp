@@ -75,6 +75,7 @@
 #define cudaHostRegisterPortable musaHostRegisterPortable
 #define cudaHostRegisterReadOnly musaHostRegisterReadOnly
 #define cudaHostUnregister musaHostUnregister
+#define cudaHostAlloc musaHostAlloc
 #define cudaHostAllocMapped musaHostAllocMapped
 #define cudaHostAllocPortable musaHostAllocPortable
 #define cudaHostAllocWriteCombined musaHostAllocWriteCombined
