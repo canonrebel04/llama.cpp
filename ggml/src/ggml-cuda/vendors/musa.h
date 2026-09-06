@@ -61,6 +61,9 @@
 #define cudaEventSynchronize musaEventSynchronize
 #define cudaEvent_t musaEvent_t
 #define cudaEventDestroy musaEventDestroy
+#define cudaEventQuery musaEventQuery
+#define cudaEventElapsedTime musaEventElapsedTime
+#define cudaErrorNotReady musaErrorNotReady
 #define cudaFree musaFree
 #define cudaFreeHost musaFreeHost
 #define cudaGetDevice musaGetDevice
@@ -72,6 +75,10 @@
 #define cudaHostRegisterPortable musaHostRegisterPortable
 #define cudaHostRegisterReadOnly musaHostRegisterReadOnly
 #define cudaHostUnregister musaHostUnregister
+#define cudaHostAllocMapped musaHostAllocMapped
+#define cudaHostAllocPortable musaHostAllocPortable
+#define cudaHostAllocWriteCombined musaHostAllocWriteCombined
+#define cudaHostGetDevicePointer musaHostGetDevicePointer
 #define cudaLaunchCooperativeKernel musaLaunchCooperativeKernel
 #define cudaLaunchHostFunc musaLaunchHostFunc
 #define cudaMalloc musaMalloc
