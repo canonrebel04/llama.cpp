@@ -79,6 +79,7 @@
 #define cudaHostAllocPortable musaHostAllocPortable
 #define cudaHostAllocWriteCombined musaHostAllocWriteCombined
 #define cudaHostGetDevicePointer musaHostGetDevicePointer
+#define cudaHostGetFlags musaHostGetFlags
 #define cudaLaunchCooperativeKernel musaLaunchCooperativeKernel
 #define cudaLaunchHostFunc musaLaunchHostFunc
 #define cudaMalloc musaMalloc
