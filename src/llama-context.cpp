@@ -2416,7 +2416,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // kv_stream_adapt() never ran at all. mctx->get_kv_stream_active_targets()
     // covers both cases (and, once wired up, iSWA/DSA/MSA/DSV4's sub-caches)
     // uniformly.
-    if (mctx != nullptr) {
+    if (mctx != nullptr && mctx->has_kv_stream_targets()) {
         for (const auto & active_target : mctx->get_kv_stream_active_targets()) {
             if (active_target.cache == nullptr) {
                 continue;
