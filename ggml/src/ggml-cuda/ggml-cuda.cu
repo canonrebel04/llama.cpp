@@ -1,4 +1,5 @@
 #include "ggml-cuda.h"
+#include "ggml-cuda-kv-stream-testing.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 
@@ -1981,7 +1982,7 @@ bool ggml_backend_cuda_kv_stream_resize_pool(
 
     ggml_cuda_set_device(runtime->device);
     CUDA_CHECK(cudaDeviceSynchronize());
-    if (!ggml_cuda_kv_stream_resident_cache_resize(
+    if (!ggml_cuda_kv_stream_resident_cache_reshape(
             runtime->resident_cache, staging_pool_bytes,
             scratch_bytes, active_pages_per_layer)) {
         GGML_LOG_ERROR(
@@ -2034,8 +2035,9 @@ bool ggml_backend_cuda_kv_stream_reconfigure(
 
     ggml_cuda_set_device(runtime->device);
     CUDA_CHECK(cudaDeviceSynchronize());
-    if (!ggml_cuda_kv_stream_resident_cache_reconfigure(
-            runtime->resident_cache, scratch_bytes, active_pages_per_layer) ||
+    if (!ggml_cuda_kv_stream_resident_cache_reshape(
+            runtime->resident_cache, KV_STREAM_KEEP_BYTES,
+            scratch_bytes, active_pages_per_layer) ||
         !ggml_cuda_kv_stream_transfer_ring_set_active_slots(
             runtime->transfer_ring, stage_slots)) {
         return false;
@@ -2070,7 +2072,9 @@ bool ggml_backend_cuda_kv_stream_repartition(
     ggml_cuda_set_device(runtime->device);
     CUDA_CHECK(cudaDeviceSynchronize());
     if (!ggml_cuda_kv_stream_transfer_ring_set_active_slots(runtime->transfer_ring, stage_slots) ||
-        !ggml_cuda_kv_stream_resident_cache_repartition(runtime->resident_cache, scratch_bytes)) {
+        !ggml_cuda_kv_stream_resident_cache_reshape(
+            runtime->resident_cache, KV_STREAM_KEEP_BYTES,
+            scratch_bytes, KV_STREAM_KEEP_PAGES)) {
         return false;
     }
     runtime->stage_slots = stage_slots;
@@ -2095,8 +2099,9 @@ bool ggml_backend_cuda_kv_stream_set_decode_layout(
 
     ggml_cuda_set_device(runtime->device);
     CUDA_CHECK(cudaDeviceSynchronize());
-    if (!ggml_cuda_kv_stream_resident_cache_set_decode_layout(
-            runtime->resident_cache, active_pages_per_layer)) {
+    if (!ggml_cuda_kv_stream_resident_cache_reshape(
+            runtime->resident_cache, KV_STREAM_KEEP_BYTES,
+            KV_STREAM_KEEP_BYTES, active_pages_per_layer)) {
         return false;
     }
     ggml_cuda_kv_stream_transfer_ring_reset_span_tuner(runtime->transfer_ring);
