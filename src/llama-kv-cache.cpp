@@ -518,8 +518,8 @@ llama_kv_cache::llama_kv_cache(
 
         map_layer_ids[il] = layers.size();
 
-<<<<<<< HEAD
-        layers.push_back({ il, k, v, k_stream, v_stream });
+        layers.push_back({ il, k, v, k_store_quantize, v_store_quantize, k_stream, v_stream, });
+
 
         // TurboQuant: create rotation matrix tensors (once, shared across layers)
         if (turbo_rotation == nullptr &&
@@ -533,14 +533,12 @@ llama_kv_cache::llama_kv_cache(
             turbo_innerq_scale_inv = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, INNERQ_MAX_CHANNELS);
             ggml_format_name(turbo_innerq_scale_inv, "turbo_innerq_scale_inv");
         }
-=======
-        layers.push_back({ il, k, v, k_store_quantize, v_store_quantize, k_stream, v_stream, });
     }
+
 
     if (!offload && placement.gpu_resident_layers > 0) {
         LLAMA_LOG_INFO("%s: partial GPU KV residency: %u of %u requested owned attention layers device-resident\n",
                 __func__, n_gpu_resident, placement.gpu_resident_layers);
->>>>>>> schwerz/moe-cache
     }
 
     if (reuse) {
@@ -3400,7 +3398,6 @@ ggml_tensor * llama_kv_cache_context::get_v(ggml_context * ctx, int32_t il) cons
     return kv->get_v(ctx, il, n_kv, sinfos[i_cur]);
 }
 
-<<<<<<< HEAD
 ggml_tensor * llama_kv_cache_context::get_turbo_rotation() const {
     return kv->get_turbo_rotation();
 }
@@ -3420,12 +3417,8 @@ ggml_tensor * llama_kv_cache_context::get_turbo_rot_inverse() const {
 ggml_tensor * llama_kv_cache_context::get_turbo_innerq_scale_inv() const {
     return kv->get_turbo_innerq_scale_inv();
 }
-ggml_tensor * llama_kv_cache_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
-    return kv->cpy_k(ctx, k_cur, k_idxs, il, sinfos[i_cur]);
-=======
 ggml_tensor * llama_kv_cache_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, ggml_tensor ** store_stage) const {
     return kv->cpy_k(ctx, k_cur, k_idxs, il, sinfos[i_cur], store_stage);
->>>>>>> schwerz/moe-cache
 }
 
 ggml_tensor * llama_kv_cache_context::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, ggml_tensor ** store_stage) const {
