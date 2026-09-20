@@ -1987,7 +1987,6 @@ static bool ggml_backend_sched_prefetch_init(ggml_backend_sched_t sched, ggml_ba
     return true;
 }
 
-static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
 // How a split input breaks into the ranges a graph reads.
 // A window over a cache split into streams is one range per stream, keyed on the last dimension: the ranges sit a fixed stride apart and the bytes between them are never read.
 // Anything else is one flat range of ggml_nbytes().

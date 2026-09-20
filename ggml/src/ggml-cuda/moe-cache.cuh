@@ -956,6 +956,12 @@ public:
     bool finish_decode(const ggml_cuda_moe_grouped_decode_acquisition & acquisition, ggml_cuda_moe_stream_t compute_stream);
     void shutdown();
 
+    // Last-resort allocator-pressure relief (canon's ggml_moe_cache_trim hook):
+    // drain this context if it serves `device`, waiting for active leases and
+    // then surrendering every device allocation it holds. Returns the device
+    // bytes actually released (0 if the context was left untouched).
+    size_t trim_for_device(int device);
+
 private:
     friend struct ggml_cuda_moe_grouped_context_test_access;
     friend class ggml_cuda_moe_group_call_lease;
@@ -1078,6 +1084,11 @@ ggml_backend_buffer_t ggml_backend_cuda_moe_cached_buffer_from_host_ptr(ggml_bac
 void ggml_backend_cuda_moe_set_debug_mm(bool enabled);
 bool ggml_backend_cuda_moe_get_debug_mm(void);
 void ggml_backend_cuda_moe_log_and_reset_stats(void);
+
+// Last-resort allocator-pressure relief for the CUDA device pools: surrender
+// MoE cache device storage on `device` so a failing pool allocation can be
+// retried. Returns the device bytes released (> 0 only if something was freed).
+size_t ggml_moe_cache_trim(int device);
 
 // Set before the first graph submission to this backend.
 void ggml_backend_cuda_set_decode_boundary_overlap(ggml_backend_t backend, bool enabled);

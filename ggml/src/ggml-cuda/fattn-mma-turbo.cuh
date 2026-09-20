@@ -57,6 +57,12 @@ void ggml_cuda_flash_attn_ext_mma_turbo_case(ggml_backend_cuda_context & ctx, gg
     float logit_softcap;
     memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
 
+#ifdef GGML_CUDA_COMPACT_CAUSAL_MASK
+    const bool compact_causal_prefix = KQV->src[3] && KQV->src[3]->type == GGML_TYPE_I64;
+#else
+    constexpr bool compact_causal_prefix = false;
+#endif
+
 #if defined(GGML_USE_HIP)
     using fattn_kernel_ptr_t = const void*;
 #else
@@ -65,7 +71,7 @@ void ggml_cuda_flash_attn_ext_mma_turbo_case(ggml_backend_cuda_context & ctx, gg
     fattn_kernel_t fattn_kernel;
     if (logit_softcap == 0.0f) {
         constexpr bool use_logit_softcap = false;
-        fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, type_K, type_V>;
+        fattn_kernel = get_fattn_mma_f16_kernel<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, /*use_sparse=*/false, type_K, type_V>(compact_causal_prefix);
 
 #if !defined(GGML_USE_MUSA)
         static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
@@ -76,7 +82,7 @@ void ggml_cuda_flash_attn_ext_mma_turbo_case(ggml_backend_cuda_context & ctx, gg
 #endif // !defined(GGML_USE_MUSA)
     } else {
         constexpr bool use_logit_softcap = true;
-        fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, type_K, type_V>;
+        fattn_kernel = get_fattn_mma_f16_kernel<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, /*use_sparse=*/false, type_K, type_V>(compact_causal_prefix);
 
 #if !defined(GGML_USE_MUSA)
         static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};

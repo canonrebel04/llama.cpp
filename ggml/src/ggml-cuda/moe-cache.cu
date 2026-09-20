@@ -11795,6 +11795,63 @@ void ggml_cuda_moe_grouped_context::shutdown() {
     impl_->resource_cv.notify_all();
 }
 
+size_t ggml_cuda_moe_grouped_context::trim_for_device(int device) {
+    if (device < 0 || impl_ == nullptr || impl_->device != device) {
+        return 0;
+    }
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->draining) {
+            return 0;
+        }
+    }
+    moe_grouped_device_scope device_scope(device);
+    size_t free_before = 0;
+    size_t total = 0;
+    if (cudaMemGetInfo(&free_before, &total) != cudaSuccess) {
+        // Cannot observe the effect of a drain; leave the context intact and
+        // let the caller treat this as "nothing to surrender".
+        (void) cudaGetLastError();
+        return 0;
+    }
+    shutdown();
+    size_t free_after = 0;
+    if (cudaMemGetInfo(&free_after, &total) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return 0;
+    }
+    return free_after > free_before ? free_after - free_before : 0;
+}
+
+extern "C"
+size_t ggml_moe_cache_trim(int device) {
+    // Canon's OOM last-resort hook from the legacy MoE cache (surrender cache
+    // device storage so a failing CUDA pool allocation can be retried),
+    // adapted to the grouped-cache design: every live context bound to
+    // `device` is drained, which waits for active leases and then frees all
+    // device banks, staging, and legacy slot caches it owns.
+    if (device < 0 || device >= ggml_cuda_info().device_count) {
+        return 0;
+    }
+    auto & telemetry = moe_cache_owner_telemetry_state();
+    std::vector<ggml_cuda_moe_grouped_context *> owners;
+    {
+        std::lock_guard<std::mutex> lock(telemetry.mutex);
+        owners.assign(telemetry.active.begin(), telemetry.active.end());
+    }
+    size_t freed = 0;
+    for (ggml_cuda_moe_grouped_context * owner : owners) {
+        if (owner != nullptr) {
+            freed += owner->trim_for_device(device);
+        }
+    }
+    if (freed > 0) {
+        GGML_LOG_INFO("%s: trimmed %.2f MiB of MoE cache device storage to relieve allocator pressure\n",
+                __func__, (double) freed / 1024.0 / 1024.0);
+    }
+    return freed;
+}
+
 extern "C"
 int32_t ggml_backend_cuda_moe_candidate_replace_v1(
         ggml_backend_t backend,

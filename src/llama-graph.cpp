@@ -1656,6 +1656,8 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     loras            (params.loras),
     mctx             (params.mctx),
     cross            (params.cross),
+    hadamard_rotations(params.hadamard_rotations),
+    hadamard_inverses(params.hadamard_inverses),
     samplers         (params.samplers),
     cb_func          (params.cb),
     res              (params.res),
@@ -1678,11 +1680,52 @@ ggml_tensor * llm_graph_context::build_cvec(
     return cvec->apply_to(ctx0, cur, il);
 }
 
+ggml_tensor * llm_graph_context::build_hadamard_fold(
+        const ggml_tensor * w,
+        ggml_tensor * cur,
+        const ggml_tensor * lookup_key) const {
+    if (!hadamard_rotations) {
+        return cur;
+    }
+
+    const auto it = hadamard_rotations->find(lookup_key ? lookup_key : w);
+    if (it == hadamard_rotations->end()) {
+        return cur;
+    }
+
+    const auto & t = it->second;
+    // another folded weight on this same activation already built the transform
+    const auto memo_key = std::make_pair((const ggml_tensor *) cur, (const ggml_tensor *) t.rot);
+    const auto memo_it  = hadamard_memo.find(memo_key);
+    if (memo_it != hadamard_memo.end()) {
+        return memo_it->second;
+    }
+
+    ggml_tensor * cur_mm = cur;
+    if (t.perm_rep > 1) {
+        // tiled [hd, nk, rep] -> grouped [hd, rep, nk] feature order
+        ggml_tensor * x = ggml_is_contiguous(cur_mm) ? cur_mm : ggml_cont(ctx0, cur_mm);
+        const int64_t ne1 = x->ne[1], ne2 = x->ne[2], ne3 = x->ne[3];
+        x = ggml_reshape_4d(ctx0, x, t.perm_hd, t.perm_nk, t.perm_rep, ne1*ne2*ne3);
+        x = ggml_cont(ctx0, ggml_permute(ctx0, x, 0, 2, 1, 3));
+        cur_mm = ggml_reshape_4d(ctx0, x, t.perm_hd*t.perm_nk*t.perm_rep, ne1, ne2, ne3);
+    }
+    if (t.signs) {
+        cur_mm = ggml_mul(ctx0, cur_mm, t.signs);
+    }
+    cur_mm = llama_mul_mat_hadamard(ctx0, cur_mm, t.rot);
+    hadamard_memo[memo_key] = cur_mm;
+
+    return cur_mm;
+}
+
 ggml_tensor * llm_graph_context::build_lora_mm(
           ggml_tensor * w,
           ggml_tensor * cur,
           ggml_tensor * w_s) const {
-    ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
+    ggml_tensor * cur_mm = build_hadamard_fold(w, cur);
+
+    ggml_tensor * res = ggml_mul_mat(ctx0, w, cur_mm);
 
     if (w_s) {
         res = ggml_mul(ctx0, res, w_s);
@@ -1714,7 +1757,9 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
           ggml_tensor * cur, // ggml_tensor * b
           ggml_tensor * ids,
           ggml_tensor * w_s) const {
-    ggml_tensor * res = ggml_mul_mat_id(ctx0, w, cur, ids);
+    ggml_tensor * cur_mm = build_hadamard_fold(w, cur);
+
+    ggml_tensor * res = ggml_mul_mat_id(ctx0, w, cur_mm, ids);
 
     if (w_s) {
         const int64_t n_expert = w_s->ne[0];
@@ -2365,13 +2410,17 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // ops (that migrates the hot pack weights to CPU every layer). Skipped
         // (-1) rows are zero and swiglu(0,0) = 0, so the two chain outputs are
         // disjoint and one add reconstructs the exact single-tensor result.
-        auto build_pack_chain = [&](ggml_tensor * w_gate, ggml_tensor * w_up, ggml_tensor * w_down, ggml_tensor * ids) {
-            ggml_tensor * gate = ggml_mul_mat_id(ctx0, w_gate, cur, ids);
+        auto build_pack_chain = [&](ggml_tensor * w_gate, ggml_tensor * w_up, ggml_tensor * w_down,
+                                    ggml_tensor * ids, const ggml_tensor * k_gate, const ggml_tensor * k_up,
+                                    const ggml_tensor * k_down) {
+            // k_* resolve the Hadamard fold through the original expert weight: the hot
+            // pack tensors are runtime copies of the same folded weight data
+            ggml_tensor * gate = ggml_mul_mat_id(ctx0, w_gate, build_hadamard_fold(k_gate, cur), ids);
             gate->op_params[0] = 1; // ids may contain -1
-            ggml_tensor * up_p = ggml_mul_mat_id(ctx0, w_up, cur, ids);
+            ggml_tensor * up_p = ggml_mul_mat_id(ctx0, w_up, build_hadamard_fold(k_up, cur), ids);
             up_p->op_params[0] = 1;
             ggml_tensor * act = ggml_swiglu_split(ctx0, gate, up_p);
-            ggml_tensor * down = ggml_mul_mat_id(ctx0, w_down, act, ids);
+            ggml_tensor * down = ggml_mul_mat_id(ctx0, w_down, build_hadamard_fold(k_down, act), ids);
             down->op_params[0] = 1;
             return down;
         };
@@ -2382,10 +2431,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // hot chain (which has no CPU inputs) runs concurrently on the GPU.
         // pinning the merge to CPU keeps it out of the hot split so the hot
         // split stays free of cross-backend inputs.
-        ggml_tensor * cold = build_pack_chain(gate_exps, up_exps, down_exps, ids_cold);
+        ggml_tensor * cold = build_pack_chain(gate_exps, up_exps, down_exps, ids_cold, gate_exps, up_exps, down_exps);
         cb(cold, "ffn_moe_down_cold", il);
 
-        ggml_tensor * hot = build_pack_chain(moe_cache->ffn_gate_exps_hot, moe_cache->ffn_up_exps_hot, moe_cache->ffn_down_exps_hot, ids_hot);
+        ggml_tensor * hot = build_pack_chain(moe_cache->ffn_gate_exps_hot, moe_cache->ffn_up_exps_hot,
+                moe_cache->ffn_down_exps_hot, ids_hot, gate_exps, up_exps, down_exps);
         cb(hot, "ffn_moe_down_hot", il);
 
         experts = ggml_add(ctx0, cold, hot);
@@ -2617,6 +2667,18 @@ ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd) const {
         auto & cur = inps[0];
 
         cur = ggml_get_rows(ctx0, tok_embd, inp->tokens);
+
+        // a Hadamard-latent embedding table stores rotated rows; restore the
+        // primal basis right after the lookup: h = s * (H z)
+        if (hadamard_inverses) {
+            const auto it = hadamard_inverses->find(tok_embd);
+            if (it != hadamard_inverses->end()) {
+                cur = llama_mul_mat_hadamard(ctx0, cur, it->second.rot);
+                if (it->second.signs) {
+                    cur = ggml_mul(ctx0, cur, it->second.signs);
+                }
+            }
+        }
 
         // apply lora for embedding tokens if needed
         for (const auto & lora : *loras) {

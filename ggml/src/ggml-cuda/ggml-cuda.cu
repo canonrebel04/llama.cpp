@@ -2290,7 +2290,7 @@ static bool ggml_cuda_mul_mat_id_impl(
                     required_consumer == GGML_CUDA_MMID_CONSUMER_UNSUPPORTED) {
                 // Device-side expert routing: no host sync, so the whole decode step is graph-capturable.
                 ggml_cuda_mul_mat_id_tq(ctx, src0, src1, ids, dst);
-                return;
+                return true;
             }
             if (ggml_is_quantized(src0->type) && !is_tq_weight_id &&
                     (required_consumer == GGML_CUDA_MMID_CONSUMER_UNSUPPORTED ||
@@ -2384,7 +2384,6 @@ static bool ggml_cuda_mul_mat_id_impl(
         ids->nb[0] == ggml_element_size(ids) && host_route->nb0 == sizeof(int32_t) &&
         ids_helper_fits;
 
-    std::vector<int32_t> ids_to_sorted_host;
     std::vector<int32_t> ids_to_sorted_host;
     std::vector<int32_t> ids_from_sorted_host;
     if (!use_device_ids) {
@@ -7177,7 +7176,6 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
             moe_property_hint = graph_properties_changed ?
                 GGML_CUDA_MOE_GRAPH_PROPERTIES_CHANGED : GGML_CUDA_MOE_GRAPH_PROPERTIES_UNCHANGED;
         }
-        }
     }
 #endif // USE_CUDA_GRAPH
 
@@ -8768,6 +8766,17 @@ static const ggml_backend_reg_i ggml_backend_cuda_reg_interface = {
     /* .get_device        = */ ggml_backend_cuda_reg_get_device,
     /* .get_proc_address  = */ ggml_backend_cuda_reg_get_proc_address,
 };
+
+// Canon's sched-level MoE cache provider (the ggml_moe_cache_api session
+// vtable consumed by ggml_backend_sched_set_moe_cache) has no CUDA
+// implementation in this tree: canon's session cache was replaced wholesale by
+// the grouped OptLlama cache, which executes through the
+// ggml_backend_moe_cache_* proc-address contract instead. Registering nothing
+// keeps the sched contract inert (llama-context resolves mode=off with "no
+// provider registered") while every OptLlama cache path stays functional.
+static void ggml_cuda_moe_cache_register(void * reg) {
+    (void) reg;
+}
 
 // backend registry
 ggml_backend_reg_t ggml_backend_cuda_reg() {
