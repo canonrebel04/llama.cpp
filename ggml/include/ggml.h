@@ -438,7 +438,11 @@ extern "C" {
         GGML_TYPE_Q8_CR   = 48, // Q8_0 blocks of a ConvRot-rotated tensor
         GGML_TYPE_Q5_CR   = 49, // Q5_0 blocks of a ConvRot-rotated tensor
         GGML_TYPE_Q6_CR   = 50, // Q6_K blocks of a ConvRot-rotated tensor
-        GGML_TYPE_COUNT   = 51,
+        // Prism-private Q2_0 at group size 128 (upstream Q2_0 is group 64). Same 2-bit codec,
+        // one fp16 scale per 128 weights. High id so it slots above both upstream types and
+        // the fork's custom region (43..50); type_traits is sized to COUNT.
+        GGML_TYPE_PQ2_0   = 142,
+        GGML_TYPE_COUNT   = 143,
     };
 
     // [TAG_GGML_PREC]
@@ -497,6 +501,7 @@ extern "C" {
         GGML_FTYPE_MOSTLY_Q8_CR   = 29, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q5_CR   = 30, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q6_CR   = 31, // except 1d tensors
+        GGML_FTYPE_MOSTLY_PQ2_0   = 128, // except 1d tensors (Prism-private group-128 Q2_0)
     };
 
     // available tensor operations:

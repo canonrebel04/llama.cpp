@@ -761,8 +761,7 @@ class MODEL_TENSOR(IntEnum):
     SSM_G_A              = auto() # Kimi Linear
     SSM_G_B              = auto() # Kimi Linear
     SSM_F                = auto() # bailing-hybrid (full-rank forget gate)
-    SSM_G                = auto() # bailing-hybrid (full-rank output gate)
-    SSM_G                = auto() # Kimi K3 (full-rank KDA gate, replaces SSM_G_A/SSM_G_B)
+    SSM_G                = auto() # bailing-hybrid (full-rank output gate); Kimi K3 (full-rank KDA gate, replaces SSM_G_A/SSM_G_B)
     ATTN_RES_SCORE       = auto() # Kimi K3 (fused res_norm * res_proj, pre-attention)
     FFN_RES_SCORE        = auto() # Kimi K3 (fused res_norm * res_proj, pre-FFN)
     OUTPUT_RES_SCORE     = auto() # Kimi K3 (fused res_norm * res_proj, final)
@@ -1231,11 +1230,6 @@ class MODEL_TENSOR(IntEnum):
     A_CTC_OUT              = auto()
     A_CTC_OUT_MID          = auto()
     A_ENC_ATTN_REL_POS_EMB = auto()
-    # qwen3tts speaker encoder
-    A_ENC_SE_CONV1         = auto()
-    A_ENC_SE_CONV2         = auto()
-    A_ENC_ASP_ATTN         = auto()
-    A_ENC_ASP_TDNN         = auto()
     # audio qformer projector
     A_QF_PROJ_QUERY        = auto()
     A_QF_PROJ_NORM         = auto()
@@ -5773,6 +5767,8 @@ class GGMLQuantizationType(IntEnum):
     Q8_CR   = 48
     Q5_CR   = 49
     Q6_CR   = 50
+    # Prism-private Q2_0 at group size 128 (upstream Q2_0 is group 64); ggml id 142
+    PQ2_0   = 142
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -5835,6 +5831,7 @@ class LlamaFileType(IntEnum):
     MOSTLY_TQ4_1S        = 44  # except 1d tensors
     MOSTLY_Q5_CR         = 45  # except 1d tensors, ConvRot-rotated Q5_0
     MOSTLY_Q6_CR         = 46  # except 1d tensors, ConvRot-rotated Q6_K
+    MOSTLY_PQ2_0         = 128  # except 1d tensors, Prism group-128 Q2_0
 
 
     GUESSED              = 1024  # not specified in the model file
@@ -5973,6 +5970,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.NVFP4:   (64, 4 + 32),
     GGMLQuantizationType.Q1_0:    (128, 2 + 16),
     GGMLQuantizationType.Q2_0:    (64, 2 + 16),
+    GGMLQuantizationType.PQ2_0:   (128, 2 + 32),
     GGMLQuantizationType.TQ3_1S:  (32, 2 + 2 + 12),
     GGMLQuantizationType.TQ4_1S:  (32, 2 + 2 + 16),
     # same layout as Q8_0, but the rows are rotated in groups of 256 (ConvRot)

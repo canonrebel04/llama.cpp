@@ -2840,7 +2840,6 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.moe_cache_slots = value;
         }
     ).set_env("LLAMA_ARG_MOE_CACHE_SLOTS"));
-    ).set_env("LLAMA_ARG_MOE_CACHE_SLOTS"));
     add_opt(common_arg(
         {"-ncffn", "--n-cpu-ffn"}, "N",
         "keep the dense FFN weights of the first N layers in the CPU\n"
@@ -2851,7 +2850,6 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
             llm_add_n_cpu_ffn_overrides(value, LLM_FFN_DENSE_REGEX, params.tensor_buft_overrides);
         }
-    ).set_env("LLAMA_ARG_N_CPU_FFN"));
     ).set_env("LLAMA_ARG_N_CPU_FFN"));
     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
     add_opt(common_arg(
