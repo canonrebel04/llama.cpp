@@ -34,10 +34,12 @@ void llama_model_fuse3::load_arch_hparams(llama_model_loader & ml) {
     hparams.n_layer_dense_lead = hparams.n_layer();
 
     // Load Fuse3-specific hparams
-    ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp);
+    ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all);
     // NOTE: the shipped converter writes "expert_top_k" unprefixed
-    if (!ml.get_key("expert_top_k", hparams.n_expert_used, false)) {
-        hparams.n_expert_used = 8;
+    {
+        uint32_t n_expert_used_cfg = 8;
+        ml.get_key("expert_top_k", n_expert_used_cfg, false);
+        hparams.n_expert_used_arr.fill(n_expert_used_cfg);
     }
 
     // Load Fuse3 custom parameters
@@ -117,9 +119,9 @@ void llama_model_fuse3::load_arch_tensors(llama_model_loader & ml) {
             std::string up_name   = "blk." + std::to_string(i) + ".fuse3_experts.up.weight";
             std::string down_name = "blk." + std::to_string(i) + ".fuse3_experts.down.weight";
 
-            fuse3_layers[i].fuse3_expert_gate = create_tensor(tn(LLM_TENSOR_FUSE3_EXPERTS_GATE, "weight", i), {n_embd, hparams.n_ff_exp, n_exp}, 0);
-            fuse3_layers[i].fuse3_expert_up   = create_tensor(tn(LLM_TENSOR_FUSE3_EXPERTS_UP, "weight", i), {n_embd, hparams.n_ff_exp, n_exp}, 0);
-            fuse3_layers[i].fuse3_expert_down = create_tensor(tn(LLM_TENSOR_FUSE3_EXPERTS_DOWN, "weight", i), {hparams.n_ff_exp, n_embd, n_exp}, 0);
+            fuse3_layers[i].fuse3_expert_gate = create_tensor(tn(LLM_TENSOR_FUSE3_EXPERTS_GATE, "weight", i), {n_embd, hparams.n_ff_exp(i), n_exp}, 0);
+            fuse3_layers[i].fuse3_expert_up   = create_tensor(tn(LLM_TENSOR_FUSE3_EXPERTS_UP, "weight", i), {n_embd, hparams.n_ff_exp(i), n_exp}, 0);
+            fuse3_layers[i].fuse3_expert_down = create_tensor(tn(LLM_TENSOR_FUSE3_EXPERTS_DOWN, "weight", i), {hparams.n_ff_exp(i), n_embd, n_exp}, 0);
             fuse3_layers[i].n_experts = n_exp;
         }
     }
@@ -166,7 +168,7 @@ llama_model_fuse3::graph<iswa>::graph(const llama_model & model, const llm_graph
         }
 
         const int n_exp = fl.n_experts;
-        const int top_k = hparams.n_expert_used;
+        const int top_k = hparams.n_expert_used(il);
         const float swiglu_limit = hparams.fuse3_swiglu_limit;
 
         // Router: cur @ router_weight -> {n_tokens, n_exp}

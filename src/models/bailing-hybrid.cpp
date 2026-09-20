@@ -69,7 +69,7 @@ void llama_model_bailing_hybrid::load_arch_hparams(llama_model_loader & ml) {
         hparams.is_recr_impl[i] = hparams.n_head_kv(i) == 0;
     }
 
-    ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp);
+    ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all);
     ml.get_key(LLM_KV_EXPERT_SHARED_COUNT,        hparams.n_expert_shared);
     ml.get_key(LLM_KV_LEADING_DENSE_BLOCK_COUNT,  hparams.n_layer_dense_lead, false);
     ml.get_key(LLM_KV_EXPERT_WEIGHTS_SCALE,       hparams.expert_weights_scale, false);
@@ -179,7 +179,7 @@ void llama_model_bailing_hybrid::load_arch_tensors(llama_model_loader &) {
 
         layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, flags);
 
-        const int64_t n_ff_exp = hparams.n_ff_exp;
+        const int64_t n_ff_exp = hparams.n_ff_exp(i);
 
         if ((uint32_t) i < hparams.n_layer_dense_lead) {
             // first_k_dense_replace = 2 -> layers 0 and 1 are dense
@@ -535,7 +535,7 @@ llama_model_bailing_hybrid::graph::graph(const llama_model & model, const llm_gr
                 layer.ffn_down_exps,
                 layer.ffn_exp_probs_b,
                 hparams.n_expert,
-                hparams.n_expert_used,
+                hparams.n_expert_used(il),
                 LLM_FFN_SILU, hparams.expert_weights_norm,
                 hparams.expert_weights_scale,
                 (llama_expert_gating_func_type) hparams.expert_gating_func,

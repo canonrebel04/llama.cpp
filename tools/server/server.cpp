@@ -89,7 +89,7 @@ int llama_server(int argc, char ** argv) {
     std::setlocale(LC_NUMERIC, "C");
 
 #ifndef _WIN32
-    // Ignore SIGPIPE so the server does not crash if an MCP child exits while we are writing to its stdin
+    // Ignore SIGPIPE so the server does not crash if a child (MCP server, tools runtime) exits while we are writing to its stdin
     signal(SIGPIPE, SIG_IGN);
 #endif
 
@@ -101,6 +101,8 @@ int llama_server(int argc, char ** argv) {
     // start the stream session manager GC right after common init, before any HTTP route can
     // touch it. lifecycle is symmetric, stop_gc() runs in clean_up() before backend free
     server_stream_session_manager_start();
+
+    SRV_INF("%s", "initializing ...\n");
 
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
         return 1;
@@ -133,7 +135,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
 
     // router server never loads a model and must not touch the GPU
     const bool is_router_server = params.model.path.empty()
-                               && params.model.hf_repo.empty();
+                               && params.model.hf_repo.empty()
+                               && params.model.docker_repo.empty();
 
     // skip device enumeration so the CUDA primary context stays uncreated
     common_params_print_info(params, !is_router_server);
@@ -154,6 +157,18 @@ int llama_server(common_params & params, int argc, char ** argv) {
             params.n_parallel = 4;
             params.kv_unified = true;
         }
+    }
+
+    // size the KV pool from --kv-unified-per-slot, unless the user pinned it with -c
+    // or with -c 0 for max context
+    const bool ctx_pool_auto_sized = params.kv_unified_per_slot > 0 &&
+                                     params.n_ctx == 0 &&
+                                     (uint32_t) params.fit_params_min_ctx != UINT32_MAX;
+
+    if (ctx_pool_auto_sized) {
+        params.n_ctx = params.n_parallel * params.kv_unified_per_slot;
+        SRV_INF("--kv-unified-per-slot: sizing KV pool to n_parallel * kv_unified_per_slot = %d * %d = %d\n", params.n_parallel,
+                params.kv_unified_per_slot, params.n_ctx);
     }
 
     // for consistency between server router mode and single-model mode, we set the same model name as alias
@@ -235,8 +250,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
     ctx_http.get ("/metrics",                  ex_wrapper(routes.get_metrics));
     ctx_http.get ("/props",                    ex_wrapper(routes.get_props));
     ctx_http.post("/props",                    ex_wrapper(routes.post_props));
-    ctx_http.get ("/models",                   ex_wrapper(routes.get_models)); // public endpoint (no API key check)
-    ctx_http.get ("/v1/models",                ex_wrapper(routes.get_models)); // public endpoint (no API key check)
+    ctx_http.get ("/models",                   ex_wrapper(routes.get_models));
+    ctx_http.get ("/v1/models",                ex_wrapper(routes.get_models));
     ctx_http.post("/completion",               ex_wrapper(routes.post_completions)); // legacy
     ctx_http.post("/completions",              ex_wrapper(routes.post_completions));
     ctx_http.post("/v1/completions",           ex_wrapper(routes.post_completions_oai));
@@ -307,11 +322,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
     };
 
     if (params.cors_origins == "*" && params.api_keys.empty()) {
-        SRV_WRN("%s", "-----------------\n");
-        SRV_WRN("%s", "CORS is set to allow all origins ('*') and no API key is set\n");
-        SRV_WRN("%s", "this can be a security risk (cross-origin attacks)\n");
-        SRV_WRN("%s", "more info: https://github.com/ggml-org/llama.cpp/pull/25655\n");
-        SRV_WRN("%s", "-----------------\n");
+        SRV_WRN("%s", "security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)\n");
     }
 
     // CORS proxy (EXPERIMENTAL, only used by the Web UI for MCP)
@@ -338,7 +349,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
 
     if (!params.server_tools.empty() || !mcp_mgr.empty()) {
         try {
-            tools.setup(params.server_tools, mcp_mgr);
+            tools.setup(params.server_tools, mcp_mgr, params.server_tools_runtime);
         } catch (const std::exception & e) {
             SRV_ERR("tools setup failed: %s\n", e.what());
             return 1;
@@ -346,7 +357,10 @@ int llama_server(common_params & params, int argc, char ** argv) {
         ctx_http.get ("/tools",           ex_wrapper(tools.handle_get));
         ctx_http.post("/tools",           ex_wrapper(tools.handle_post));
         if (!params.server_tools.empty()) {
-            warn_names.push_back("built-in tools (experimental)");
+            warn_names.push_back("server tools (experimental)");
+        }
+        if (!params.server_tools_runtime.empty()) {
+            warn_names.push_back("tools runtime (experimental)");
         }
         if (!mcp_mgr.empty()) {
             warn_names.push_back("MCP servers (experimental)");
@@ -356,14 +370,13 @@ int llama_server(common_params & params, int argc, char ** argv) {
         ctx_http.post("/tools",           ex_wrapper(res_403));
     }
 
-    if (warn_names.size() > 0) {
-        SRV_WRN("%s", "-----------------\n");
-        SRV_WRN("%s", "the following feature(s) are enabled:\n");
+    if (!warn_names.empty()) {
+        std::string features;
         for (const auto & name : warn_names) {
-            SRV_WRN("    %s\n", name.c_str());
+            if (!features.empty()) features += ", ";
+            features += name;
         }
-        SRV_WRN("%s", "do not expose the server to untrusted environments\n");
-        SRV_WRN("%s", "-----------------\n");
+        SRV_WRN("security: %s enabled - do not expose to untrusted environments\n", features.c_str());
     }
 
     //
@@ -419,6 +432,18 @@ int llama_server(common_params & params, int argc, char ** argv) {
             mcp_mgr.shutdown();
             ctx_http.stop();
         };
+
+        try {
+            models_routes->models.load_startup_models();
+        } catch (const std::exception & e) {
+            SRV_ERR("failed to load models on startup: %s\n", e.what());
+            ctx_http.stop();
+            if (ctx_http.thread.joinable()) {
+                ctx_http.thread.join();
+            }
+            clean_up();
+            return 1;
+        }
 
     } else {
         // setup clean up function, to be called before exit
@@ -489,8 +514,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
     // TODO: remove this in the future
     // check the string to also handle the .sock case
     if (string_ends_with(ctx_http.listening_address, ":8080")) {
-        SRV_WRN("%s", "NOTICE: server default port will be changed to :9931 in a future release\n");
-        SRV_WRN("%s", "        ref: https://github.com/ggml-org/llama.cpp/pull/26508\n");
+        SRV_WRN("%s", "notice: server default port will be changed to :9931 in a future release (ref: https://github.com/ggml-org/llama.cpp/pull/26508)\n");
     }
 
     if (is_router_server) {
