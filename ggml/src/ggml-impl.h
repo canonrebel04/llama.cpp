@@ -28,6 +28,8 @@
 extern "C" {
 #endif
 
+GGML_API bool ggml_gated_delta_net_validate(const struct ggml_tensor * tensor);
+
 void ggml_print_backtrace(void);
 
 uint64_t ggml_graph_next_uid(void);
@@ -356,6 +358,9 @@ struct ggml_cgraph {
     // an optional identifier that can be utilized to recognize same graphs if two non-zero values match
     // a value of 0 means it is not set and should be ignored
     uint64_t uid;
+
+    // execution-only metadata; it is not part of the graph topology
+    struct ggml_graph_execution_certificate execution_certificate;
 };
 
 // returns a slice of cgraph with nodes [i0, i1)

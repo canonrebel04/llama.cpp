@@ -385,6 +385,47 @@ extern "C" {
     struct ggml_context;
     struct ggml_cgraph;
 
+#define GGML_GRAPH_EXECUTION_CERTIFICATE_MAGIC 0x47455831u
+#define GGML_GRAPH_EXECUTION_CERTIFICATE_VERSION 1u
+
+    enum ggml_graph_execution_domain {
+        GGML_GRAPH_EXECUTION_DOMAIN_INVALID = 0,
+        GGML_GRAPH_EXECUTION_DOMAIN_MAIN    = 1,
+        GGML_GRAPH_EXECUTION_DOMAIN_DRAFT   = 2,
+        GGML_GRAPH_EXECUTION_DOMAIN_MTP     = 3,
+    };
+
+    enum ggml_graph_execution_row_semantics {
+        GGML_GRAPH_EXECUTION_ROW_SEMANTICS_INVALID     = 0,
+        GGML_GRAPH_EXECUTION_ROW_SEMANTICS_INDEPENDENT = 1,
+        GGML_GRAPH_EXECUTION_ROW_SEMANTICS_SEQUENTIAL  = 2,
+        GGML_GRAPH_EXECUTION_ROW_SEMANTICS_SPECULATIVE = 3,
+    };
+
+    enum ggml_graph_execution_certificate_flag {
+        GGML_GRAPH_EXECUTION_CERTIFICATE_FLAG_NONE             = 0,
+        GGML_GRAPH_EXECUTION_CERTIFICATE_FLAG_REQUIRED_GROUPED = 1u << 0,
+    };
+
+    // Callers initialize all fields except source_graph_uid and split_graph_uid, which must be zero.
+    // owner_namespace isolates an owner; owner_generation changes when that owner's reusable state is replaced.
+    // The scheduler stamps the graph UIDs for each backend split. Invalid input is treated as uncertified execution.
+    struct ggml_graph_execution_certificate {
+        uint32_t magic;
+        uint32_t abi_version;
+        uint32_t struct_size;
+        uint32_t flags;
+        uint32_t domain;
+        uint32_t row_semantics;
+        uint32_t n_rows;
+        uint32_t n_sequences;
+        uint64_t owner_namespace;
+        uint64_t owner_generation;
+        uint64_t source_graph_uid;
+        uint64_t split_graph_uid;
+        uint64_t reserved[4];
+    };
+
     // NOTE: always add types at the end of the enum to keep backward compatibility
     enum ggml_type {
         GGML_TYPE_F32     = 0,
@@ -501,7 +542,7 @@ extern "C" {
         GGML_FTYPE_MOSTLY_Q8_CR   = 29, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q5_CR   = 30, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q6_CR   = 31, // except 1d tensors
-        GGML_FTYPE_MOSTLY_PQ2_0   = 128, // except 1d tensors (Prism-private group-128 Q2_0)
+        GGML_FTYPE_MOSTLY_PQ2_0   = 128, // GGML_TYPE_PQ2_0, except 1d tensors (Prism-private group-128 Q2_0)
     };
 
     // available tensor operations:
@@ -682,6 +723,7 @@ extern "C" {
         GGML_TENSOR_FLAG_PARAM   =  4, // ...contains trainable parameters
         GGML_TENSOR_FLAG_LOSS    =  8, // ...defines loss for numerical optimization (multiple loss tensors add up)
         GGML_TENSOR_FLAG_COMPUTE = 16, // ...must be computed
+        GGML_TENSOR_FLAG_MOE_ROUTER = 32, // ...describes routed-expert scores
     };
 
     enum ggml_tri_type {
@@ -2493,7 +2535,8 @@ extern "C" {
     // q:    [n_embd_k, n_batch, n_head,    ne3 ]
     // k:    [n_embd_k, n_kv,    n_head_kv, ne3 ]
     // v:    [n_embd_v, n_kv,    n_head_kv, ne3 ] !! not transposed !!
-    // mask: [n_kv,     n_batch, ne32,      ne33]
+    // mask: [n_kv, n_batch, ne32, ne33] F16, or [n_batch] I64 consecutive write indices
+    // The I64 causal bound for query i is mask[i] + 1 and requires max_bias == 0
     // res:  [n_embd_v, n_head,  n_batch,   ne3 ] !! permuted !!
     //
     // broadcast:
@@ -2656,16 +2699,20 @@ extern "C" {
     // TODO: add ggml_gated_delta_net_set_bcast() to be able to configure Q, K broadcast type: tiled vs interleaved [TAG_GGML_GDN_BCAST]
     // ref: https://github.com/ggml-org/llama.cpp/pull/19468#discussion_r2786394306
     //
-    // tensor shapes (S_k == S_v, H_v % H_k == 0):
-    //   q, k  : [S_k, H_k, n_tokens, n_seqs]
+    // tensor shapes (S_k == S_v, H_v % H_k == 0, n_seqs % n_seqs_qk == 0):
+    //   q, k  : [S_k, H_k, n_tokens, n_seqs_qk]
     //   v     : [S_v, H_v, n_tokens, n_seqs]
     //   g     : [1, H_v, n_tokens, n_seqs] (scalar gate) or [S_v, H_v, n_tokens, n_seqs] (KDA)
     //   beta  : [1, H_v, n_tokens, n_seqs]
     //   state : [S_v, S_v, H_v, n_seqs] -- initial recurrent state s0
     //
-    // the output packs the attention scores [S_v, H_v, n_tokens, n_seqs] followed by K state
-    // snapshots, most-recent first (slot 0 = final state, slot s = state s tokens back). K == 1
-    // keeps only the final state; when n_tokens < K only slots 0..n_tokens-1 are written.
+    // The output packs the attention scores [S_v, H_v, n_tokens, n_seqs] followed by K state slots [S_v, S_v, H_v, n_seqs].
+    // By default, slot 0 is the final state and up to min(n_tokens, K) trailing states are written most-recent first.
+    // For K > 1, trailing-only mode accepts (trailing_snapshots, selected_token, reserve_input) == ([0, K], -1, false) and writes up to min(n_tokens, trailing_snapshots) states most-recent first.
+    // Selected-token mode requires (trailing_snapshots, selected_token, reserve_input) == (0, [0, n_tokens), false) and writes only the state after selected_token to slot 0.
+    // Reserved-input mode requires (trailing_snapshots, selected_token, reserve_input) == (min(n_tokens, K - 1), -1, true) and writes the input state to slot K - 1 and trailing states most-recent first from slot 0.
+    // State slots not selected by these modes stay untouched.
+    // K == 1 requires (trailing_snapshots, selected_token, reserve_input) == (1, -1, false) and writes the final state to slot 0.
     GGML_API struct ggml_tensor * ggml_gated_delta_net(
             struct ggml_context * ctx,
             struct ggml_tensor  * q,
@@ -2687,6 +2734,27 @@ extern "C" {
             struct ggml_tensor  * scale);        // NULL = no InnerQ scaling
 
     // DeepSeek V4 Lightning Indexer
+
+    GGML_API void ggml_gated_delta_net_set_snapshots(
+            struct ggml_tensor * tensor,
+            int32_t              trailing_snapshots,
+            int32_t              selected_token,
+            bool                 reserve_input);
+
+    GGML_API bool ggml_gated_delta_net_has_default_snapshot_params(
+            const struct ggml_tensor * tensor);
+
+    // DSA lightning indexer
+    //
+    // q:       [n_embd_idx, n_head_idx, n_batch, ne3 ]
+    // k:       [n_embd_idx, 1,          n_kv,    ne3 ]
+    // weights: [n_head_idx, n_batch,    1,       ne3 ] !! prescaled !!
+    // mask:    [n_kv,       n_batch,    1,       ne33] !! f16 !!
+    // res:     [n_kv,       n_batch,    1,       ne3 ]
+    //
+    // broadcast:
+    //   ne3 % ne33 == 0
+    //
     GGML_API struct ggml_tensor * ggml_lightning_indexer(
         struct ggml_context * ctx,
         struct ggml_tensor  * q,

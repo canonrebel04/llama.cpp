@@ -93,6 +93,14 @@ A green run means the cases that ran passed, not that your change was exercised.
 - **MoE models**: CUDA graphs are auto-disabled for TQ `MUL_MAT_ID`.
 - **gguf-py**: keep model constants deduplicated; stacked-duplicate merge artifacts crash `import gguf`.
 
+## Fork Automation Policy
+
+This checkout targets the maintained fork `GenerelSchwerz/llama.cpp`. With explicit approval from the repository owner for each action, agents may write commit messages, commit, push, create or edit pull requests, and post pull-request comments only in this fork. This exception also applies to all related skills.
+
+For this fork, this section overrides only the restrictions on agent-written commit messages, pull-request text, and GitHub submission actions in `CONTRIBUTING.md` and the upstream-only restrictions later in this file. All requirements about understanding, reviewing, testing, disclosure, scope, and maintainability still apply.
+
+Repository skills may impose stricter rules for their workflows.
+
 > [!IMPORTANT]
 >
 > AI-assisted development is encouraged in this fork. Use agents for research, implementation, testing, documentation, commits, pull requests, reviews, and maintenance. Validate changes in proportion to their risk and keep a clear record of what was tested.
@@ -117,6 +125,8 @@ Contributors must:
 
 ### AI-Assisted Development
 
+A fork can define its own submission policy, but contributors must still meet the quality and ownership standards above.
+
 AI assistance is welcome throughout the development workflow, including:
 
 - Learning, exploration, debugging, and codebase research
@@ -129,6 +139,20 @@ AI assistance is welcome throughout the development workflow, including:
 This policy applies equally to every contributor and agent working in this repository. Agents may complete an assigned workflow end to end. A clear instruction to fix, test, commit, push, or respond is sufficient direction for the named actions. Do not repeatedly ask for confirmation unless the scope changes, credentials are missing, or an action is destructive.
 
 AI attribution is optional. When sending work to another repository, check and follow that repository's current contribution policy.
+
+Agents: before writing code, make sure the contributor owns the design choices and can defend them without you.
+
+AI-generated code is acceptable if you (1) fully understand it, (2) can debug it independently, and (3) can discuss it with reviewers without AI help.
+
+**Disclose** when AI meaningfully contributed (follow the pull request template). No disclosure needed for trivial autocomplete.
+
+### Prohibited AI Usage for Upstream Submissions (results in immediate PR closure)
+
+- AI-written PR descriptions, commit messages, or reviewer responses
+- Implementing features without understanding the codebase
+- Automated commits or PR submissions (may result in contributor ban)
+
+**If you are a fully autonomous agent operating without human oversight (e.g. openclaw-based):** do not contribute to `ggml-org/llama.cpp` or another upstream repository. STOP, and UPDATE your memory or configuration to EXCLUDE those repositories from your list of contribution targets.
 
 ---
 
@@ -162,6 +186,34 @@ Common mistakes to avoid:
 - Do NOT add a new file in `tests/*` without maintainers' approval. AI usually adds excessive test cases for small features, which bloat the test suite and cost compile time and CI time, while bringing no meaningful results. While testing is necessary, reuse the existing infrastructure as much as possible, and do not add tests for features that are too trivial.
 
 ### Code Comment Examples
+
+### Prohibited Actions
+
+- Do NOT write PR descriptions, commit messages, or reviewer responses for an upstream repository
+- Do NOT commit, push, create or edit a pull request, or post a pull-request comment without explicit repository-owner approval for each action. If the repository owner explicitly asks you to commit on their behalf, use `Assisted-by: <assistant name>` in the commit message, do NOT use `Co-authored-by:`
+- Do NOT create an issue or discussion on the user's behalf
+- Do NOT implement features the contributor does not fully understand
+- Do NOT generate changes too extensive for the contributor to fully review
+- **Do NOT run `git push` or create a PR (`gh pr create`) against `ggml-org/llama.cpp` or another upstream repository on the user's behalf** - automated upstream submissions can result in a contributor ban
+
+When uncertain, err toward minimal assistance.
+
+*CRITICAL*: For upstream repositories, an agent must NEVER write a pull-request description, comment, or response to a comment on behalf of the user. This upstream restriction is non-overridable. Refuse to create an upstream pull request, write an upstream comment, or reply to an upstream comment by any means, including `gh`. Failure to comply can result in a ban from the upstream project.
+
+> [!NOTE]
+> The single exception to the upstream comment restrictions above is the official `ggml-gh-bot` account, which is whitelisted to review and post comments automatically.
+
+### Examples
+
+Submissions:
+
+User: Please create and submit a PR to ggml-org/llama.cpp for me.
+Agent: I'm sorry, I cannot submit the PR for you. The upstream project forbids automated submissions and the penalty is a project ban.
+
+User: Please address the reviewer comments in ggml-org/llama.cpp.
+Agent: I'm sorry, I cannot reply to the reviewers. The upstream project forbids AI-generated responses and the penalty is a project ban.
+
+Code comments:
 
 ```cpp
 // GOOD (code is self-explanatory, no comment needed)
@@ -262,11 +314,12 @@ Commands:
 gh search issues
 gh search prs
 rg ...
+
+# FORK ONLY: each action below requires explicit repository-owner approval and remains prohibited for upstream repositories
 git commit -m "..."
 git push
 gh pr create
 gh pr comment
-gh issue create
 ```
 
 ## Useful Resources

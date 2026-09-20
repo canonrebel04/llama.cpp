@@ -12,6 +12,7 @@
 #include <set>
 #include <functional>
 #include <map>
+#include <optional>
 
 struct ggml_cgraph;
 struct ggml_context;
@@ -33,6 +34,15 @@ class llama_kv_cache_iswa_context;
 class llama_memory_recurrent_context;
 class llama_memory_hybrid_context;
 class llama_memory_hybrid_iswa_context;
+
+struct llama_recurrent_snapshot_mode {
+    bool sparse = false;
+    int32_t selected_token = -1;
+
+    bool operator==(const llama_recurrent_snapshot_mode & other) const {
+        return sparse == other.sparse && selected_token == other.selected_token;
+    }
+};
 
 // certain models (typically multi-modal) can produce different types of graphs
 enum llm_graph_type {
@@ -111,6 +121,9 @@ public:
 
     virtual void set_input(const llama_ubatch * ubatch) = 0;
 
+    // The setter must not read host token values or access unstaged device data.
+    virtual bool can_decode_sampled() const { return false; }
+
     // return true if the resulting input tensors using the provided graph parameters would be
     //   the same as the previous input tensors that we have currently stored in the object
     virtual bool can_reuse(const llm_graph_params & params) {
@@ -128,6 +141,8 @@ using llm_graph_input_ptr = std::unique_ptr<llm_graph_input_i>;
 
 class llm_graph_input_embd : public llm_graph_input_i {
 public:
+    bool can_decode_sampled() const override { return true; }
+
     llm_graph_input_embd(int64_t n_embd) : n_embd(n_embd) {}
     virtual ~llm_graph_input_embd() = default;
 
@@ -160,6 +175,8 @@ public:
 
 class llm_graph_input_pos : public llm_graph_input_i {
 public:
+    bool can_decode_sampled() const override { return true; }
+
     llm_graph_input_pos(uint32_t n_pos_per_embd) : n_pos_per_embd(n_pos_per_embd) {}
     virtual ~llm_graph_input_pos() = default;
 
@@ -218,6 +235,8 @@ public:
 
 class llm_graph_input_out_ids : public llm_graph_input_i {
 public:
+    bool can_decode_sampled() const override { return true; }
+
     llm_graph_input_out_ids(
             const llama_hparams & hparams,
             const llama_cparams & cparams,
@@ -263,7 +282,7 @@ public:
 
 class llm_graph_input_rs : public llm_graph_input_i {
 public:
-    llm_graph_input_rs(const llama_memory_recurrent_context * mctx) : mctx(mctx) {}
+    llm_graph_input_rs(const llama_memory_recurrent_context * mctx);
     virtual ~llm_graph_input_rs() = default;
 
     void set_input(const llama_ubatch * ubatch) override;
@@ -282,6 +301,7 @@ public:
     // used in view offsets, need to match for valid graph reuse
     uint32_t head;
     int32_t rs_z;
+    llama_recurrent_snapshot_mode snapshot_mode;
 };
 
 class llm_graph_input_cross_embd : public llm_graph_input_i {
@@ -322,6 +342,8 @@ public:
 
 class llm_graph_input_attn_kv : public llm_graph_input_i {
 public:
+    bool can_decode_sampled() const override { return true; }
+
     llm_graph_input_attn_kv(
             const llama_hparams & hparams,
             const llama_cparams & cparams,
@@ -344,8 +366,9 @@ public:
     ggml_tensor * self_k_idxs = nullptr; // I64 [n_batch]
     ggml_tensor * self_v_idxs = nullptr; // I64 [n_batch] or [n_batch*n_embd_v_gqa]
 
-    ggml_tensor * self_kq_mask     = nullptr; // F32/F16 [n_kv, n_batch/n_stream, 1, n_stream]
-    ggml_tensor * self_kq_mask_cnv = nullptr; //         [n_kv, n_batch/n_stream, 1, n_stream]
+    ggml_tensor * self_kq_mask     = nullptr; // F32/F16 dense mask, or I64 [n_batch] causal prefix descriptor
+    ggml_tensor * self_kq_mask_cnv = nullptr;
+    std::optional<uint32_t> self_kq_mask_causal_prefix_n_kv;
 
     // note: assumes v_rot^2 == I
     ggml_tensor * self_k_rot = nullptr;
@@ -387,8 +410,9 @@ public:
 
     ggml_tensor * self_k_idxs = nullptr; // I64 [n_batch]
 
-    ggml_tensor * self_kq_mask     = nullptr; // F32/F16 [n_kv, n_batch/n_stream, 1, n_stream]
-    ggml_tensor * self_kq_mask_cnv = nullptr; //         [n_kv, n_batch/n_stream, 1, n_stream]
+    ggml_tensor * self_kq_mask     = nullptr; // F32/F16 dense mask, or I64 [n_batch] causal prefix descriptor
+    ggml_tensor * self_kq_mask_cnv = nullptr;
+    std::optional<uint32_t> self_kq_mask_causal_prefix_n_kv;
 
     const llama_hparams hparams;
     const llama_cparams cparams;
@@ -466,6 +490,8 @@ public:
 // standard K/V attention input against the base cache, plus destination indices for the indexer key cache
 class llm_graph_input_attn_kv_msa : public llm_graph_input_attn_kv {
 public:
+    bool can_decode_sampled() const override { return false; }
+
     llm_graph_input_attn_kv_msa(
             const llama_hparams & hparams,
             const llama_cparams & cparams,
@@ -485,6 +511,8 @@ public:
 
 class llm_graph_input_attn_kv_iswa : public llm_graph_input_i {
 public:
+    bool can_decode_sampled() const override { return true; }
+
     llm_graph_input_attn_kv_iswa(
             const llama_hparams & hparams,
             const llama_cparams & cparams,
@@ -516,6 +544,8 @@ public:
     ggml_tensor * self_kq_mask_cnv     = nullptr; //         [n_kv, n_batch/n_stream, 1, n_stream]
     ggml_tensor * self_kq_mask_swa     = nullptr; // F32/F16 [n_kv, n_batch/n_stream, 1, n_stream]
     ggml_tensor * self_kq_mask_swa_cnv = nullptr; //         [n_kv, n_batch/n_stream, 1, n_stream]
+
+    std::optional<uint32_t> self_kq_mask_causal_prefix_n_kv;
 
     ggml_tensor * self_k_rot = nullptr;
     ggml_tensor * self_v_rot = nullptr;
@@ -662,6 +692,8 @@ public:
 
 class llm_graph_input_mem_hybrid : public llm_graph_input_i {
 public:
+    bool can_decode_sampled() const override { return true; }
+
     llm_graph_input_mem_hybrid(
             const llama_cparams & cparams,
             std::unique_ptr<llm_graph_input_attn_kv> inp_attn,
@@ -746,6 +778,8 @@ public:
 
 class llm_graph_input_sampling : public llm_graph_input_i {
 public:
+    bool can_decode_sampled() const override { return true; }
+
     llm_graph_input_sampling(std::map<llama_seq_id, llama_sampler *> samplers) :
         samplers(std::move(samplers)) { }
     virtual ~llm_graph_input_sampling() = default;
@@ -777,6 +811,7 @@ struct llm_graph_params {
     llama_ubatch ubatch; // note: intentionally make a copy
 
     llm_graph_type gtype;
+    bool is_reserve = false;
 
     ggml_backend_sched_t sched;
     ggml_backend_t backend_cpu;
@@ -808,10 +843,14 @@ struct llm_graph_params {
     llm_graph_cb cb;
 
     llm_graph_result * res;
+    class llama_staged_inputs * staged_inputs = nullptr;
 
     // return true if the "other" params would result in a graph with the same topology as with the current params
     //   having the same topology allows us to reuse the graph in some cases
     bool allow_reuse(const llm_graph_params & other) const {
+        if (staged_inputs != other.staged_inputs) {
+            return false;
+        }
         // first check the ubatch
         bool can_reuse_ubatch =
             ubatch.equal_seqs() == other.ubatch.equal_seqs() &&
@@ -878,12 +917,28 @@ struct llm_graph_params {
             cparams.causal_attn             == other.cparams.causal_attn             &&
             arch  == other.arch  &&
             gtype == other.gtype &&
+            is_reserve == other.is_reserve &&
             cvec  == other.cvec  &&
             loras == other.loras &&
             cross == other.cross;
     }
 };
 
+
+struct llm_graph_moe_region {
+    int32_t                    layer          = -1;
+    uint32_t                   semantic_group = UINT32_MAX;
+    uint32_t                   domain         = 0;
+    ggml_tensor *              down           = nullptr;
+    ggml_tensor *              route          = nullptr;
+    ggml_tensor *              output         = nullptr;
+    bool                       external_route = false;
+    std::vector<ggml_tensor *> operations;
+    std::vector<ggml_tensor *> inputs;
+    ggml_backend_t             backend = nullptr;
+
+    bool place(ggml_backend_sched_t sched, ggml_backend_t owner);
+};
 
 class llm_graph_result {
 public:
@@ -906,7 +961,9 @@ public:
 
     void reset();
 
-    void set_inputs(const llama_ubatch * ubatch);
+    bool can_decode_sampled() const;
+    const std::vector<ggml_tensor *> & get_inp_token_tensors() const { return inp_token_tensors; }
+    void set_inputs(const llama_ubatch * ubatch, bool skip_token_upload = false);
     void set_outputs(const llm_graph_params & params);
 
     // try to update the existing graph result using the new graph parameters in order to reuse it
@@ -923,6 +980,17 @@ public:
     std::vector<llm_graph_fused_node> fused_nodes;
 
     const std::vector<llm_graph_fused_node> & get_fused_nodes() const { return fused_nodes; }
+
+    void add_moe_region(int32_t       layer,
+                        ggml_tensor * down,
+                        ggml_tensor * route,
+                        ggml_tensor * first,
+                        ggml_tensor * output,
+                        bool          external_route);
+
+    std::vector<llm_graph_moe_region> & get_moe_regions() { return moe_regions; }
+
+    const std::vector<llm_graph_moe_region> & get_moe_regions() const { return moe_regions; }
 
     void set_params(const llm_graph_params & params);
 
@@ -955,6 +1023,9 @@ public:
     int64_t max_nodes;
 
 private:
+    std::vector<ggml_tensor *> inp_token_tensors;
+    std::vector<llm_graph_moe_region> moe_regions;
+
     // keep a copy of the previous graph parameters
     // we will use this to determine whether the graph can be reused by comparing them with the new parameters
     // note: these are updated after constructing the new graph
@@ -1016,6 +1087,7 @@ struct llm_graph_context {
     const enum llama_pooling_type pooling_type;
     const enum llama_rope_type    rope_type;
 
+    const bool is_reserve;
     ggml_backend_sched_t sched;
 
     ggml_backend_t backend_cpu; // TODO: needed by build_attn_mha, figure out a way to remove?
@@ -1354,7 +1426,7 @@ struct llm_graph_context {
     // hybrid
     //
 
-    llm_graph_input_mem_hybrid * build_inp_mem_hybrid() const;
+    llm_graph_input_mem_hybrid * build_inp_mem_hybrid(bool allow_compact_kq_mask = true) const;
     llm_graph_input_mem_hybrid_k * build_inp_mem_hybrid_k() const;
 
     llm_graph_input_mem_hybrid_iswa * build_inp_mem_hybrid_iswa() const;

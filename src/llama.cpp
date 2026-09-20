@@ -14,6 +14,7 @@
 #include "ggml.h"
 #include "ggml-cpp.h"
 #include "ggml-backend.h"
+#include "../ggml/src/ggml-backend-moe.h"
 #include "gguf.h"
 
 #include <algorithm>
@@ -316,10 +317,82 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
 static std::pair<int, llama_model *> llama_model_load(struct gguf_context * metadata, llama_model_set_tensor_data_t set_tensor_data, void * set_tensor_data_ud,
         const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model_params & params) {
     try {
-        llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
-            params.check_tensors, params.no_alloc, params.load_mtp, params.kv_overrides, params.tensor_buft_overrides);
+        // If the user enabled the MoE expert cache (--moe-expert-cache-size > 0)
+        // and CUDA is available, *prepend* a tensor_buft_override that routes
+        // every expert tensor to the CUDA_MoE_Cached buffer type. Prepending
+        // matters because the loader's match loop is first-match-wins -- we
+        // need the cache override to catch expert tensors before any earlier
+        // --cpu-moe / --n-cpu-moe overrides do. The vector owns the storage
+        // for the duration of this function, which outlives the loader's use
+        // of the pointer.
+        std::vector<llama_model_tensor_buft_override> effective_overrides;
+        struct moe_buffer_type_owner {
+            ggml_backend_buffer_type_t type = nullptr;
+            ggml_backend_moe_cache_free_buffer_type_t release = nullptr;
+            ~moe_buffer_type_owner() {
+                if (type != nullptr) {
+                    release(type);
+                }
+            }
+        } moe_buffer_type;
+        const llama_model_tensor_buft_override * effective_overrides_ptr = params.tensor_buft_overrides;
+        if (params.moe_expert_cache_host_pinned_size > 0 && params.moe_expert_cache_slots <= 0) {
+            throw std::runtime_error("--moe-expert-cache-host-pinned-mb requires --moe-expert-cache-size");
+        }
+        if (params.moe_expert_cache_slots > 0) {
+            ggml_backend_moe_cache_buffer_type_t buffer_type_fn = nullptr;
+            ggml_backend_reg_t cache_reg = nullptr;
+            for (size_t i = 0; i < ggml_backend_reg_count(); ++i) {
+                ggml_backend_reg_t reg = ggml_backend_reg_get(i);
+                auto candidate_buffer_type_fn = (ggml_backend_moe_cache_buffer_type_t) ggml_backend_reg_get_proc_address(
+                        reg, GGML_BACKEND_MOE_CACHE_BUFFER_TYPE_PROC_NAME);
+                if (candidate_buffer_type_fn != nullptr) {
+                    buffer_type_fn = candidate_buffer_type_fn;
+                    cache_reg = reg;
+                    break;
+                }
+            }
+            if (buffer_type_fn == nullptr) {
+                throw std::runtime_error("--moe-expert-cache-size requires a backend with MoE cache support");
+            }
+            ggml_backend_buffer_type_t buft = buffer_type_fn();
+            if (params.moe_expert_cache_host_pinned_size > 0) {
+                auto create = (ggml_backend_moe_cache_bounded_buffer_type_t) ggml_backend_reg_get_proc_address(
+                    cache_reg, GGML_BACKEND_MOE_CACHE_BOUNDED_BUFFER_TYPE_PROC_NAME);
+                moe_buffer_type.release = (ggml_backend_moe_cache_free_buffer_type_t) ggml_backend_reg_get_proc_address(
+                    cache_reg, GGML_BACKEND_MOE_CACHE_FREE_BUFFER_TYPE_PROC_NAME);
+                if (create == nullptr || moe_buffer_type.release == nullptr ||
+                        (moe_buffer_type.type = create(params.moe_expert_cache_host_pinned_size)) == nullptr) {
+                    throw std::runtime_error("backend cannot create the bounded MoE host source buffer");
+                }
+                buft = moe_buffer_type.type;
+            }
+            // Pattern matches the same expert tensors that --cpu-moe / --n-cpu-moe target.
+            // Kept inline (not pulled from common.h) so libllama keeps no common/ dep.
+            static const char * MOE_EXPS_PATTERN =
+                "\\.ffn_(up|down|gate|gate_up)_(ch|)exps";
+            effective_overrides.push_back({MOE_EXPS_PATTERN, buft});
 
-        ml.lazy.mode = params.lazy_mode;
+            bool had_user_overrides = false;
+            if (params.tensor_buft_overrides) {
+                for (const auto * o = params.tensor_buft_overrides; o->pattern != nullptr; ++o) {
+                    effective_overrides.push_back(*o);
+                    had_user_overrides = true;
+                }
+            }
+            if (had_user_overrides) {
+                LLAMA_LOG_WARN("--moe-expert-cache-size is set; expert tensors route through "
+                               "the GPU LRU cache regardless of --cpu-moe / --n-cpu-moe.\n");
+            }
+            effective_overrides.push_back({nullptr, nullptr});
+            effective_overrides_ptr = effective_overrides.data();
+        }
+
+        llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
+            params.check_tensors, params.no_alloc, params.load_mtp, params.kv_overrides, effective_overrides_ptr);
+
+        ml.lazy.mode    = params.lazy_mode;
+        ml.model_shared = params.model_shared;
 
         ml.print_info();
         std::unique_ptr<llama_model> model_ptr(llama_model_create(ml, params));
@@ -617,4 +690,3 @@ const char * llama_print_system_info(void) {
 
     return s.c_str();
 }
-

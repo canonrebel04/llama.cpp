@@ -16,6 +16,7 @@ struct llama_cparams {
     uint32_t n_rs_seq;        // number of recurrent-state snapshots per seq for rollback
     uint32_t n_outputs_max;   // max outputs supported by the context
     uint32_t n_outputs_max_per_seq;
+    uint32_t kv_gpu_layers;
     int32_t  n_threads;       // number of threads to use for generation
     int32_t  n_threads_batch; // number of threads to use for batch processing
 
@@ -40,9 +41,12 @@ struct llama_cparams {
     bool embeddings_nextn_masked; // extract for only rows where batch.logits != 0
     bool mtp_chain;               // DECODER_MTP: chain rows in-graph from the first row's inputs
     bool causal_attn;
-    bool offload_kqv;
+    bool decode_boundary_overlap;
+    bool offload_kqv;             // place persistent attention KV storage on the accelerator
+    bool offload_attn_compute;    // allow attention compute to use the accelerator independently of KV storage
     bool sched_async_cpu;
     bool flash_attn;
+    bool flash_attn_causal_prefix_supported;
     bool auto_fa;
     bool fused_lid;          // use fused lightning indexer
     bool auto_flid;
@@ -58,6 +62,10 @@ struct llama_cparams {
     bool op_offload;
     bool kv_unified;
     bool pipeline_parallel;
+    bool kv_cpu_pinned;
+    bool recurrent_state_offload;
+    bool phase_aware_workspace;
+    bool live_context_workspace;
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 

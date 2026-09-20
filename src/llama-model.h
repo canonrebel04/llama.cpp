@@ -18,6 +18,20 @@ struct llama_cparams;
 struct llama_ubatch;
 struct llama_model_loader;
 
+struct llama_moe_source_bank {
+    ggml_tensor * tensor;
+    uint32_t role;
+    uint32_t status;
+};
+
+struct llama_moe_source_group {
+    uint32_t layout;
+    uint32_t domain;
+    bool route_present;
+    std::vector<llama_moe_source_bank> banks;
+    int32_t                            layer = -1;
+};
+
 // available models
 enum llm_type {
     LLM_TYPE_UNKNOWN,
@@ -231,6 +245,11 @@ struct llama_layer_nextn {
     struct ggml_tensor * shared_head_head_s    = nullptr;
     struct ggml_tensor * shared_head_head_in_s = nullptr;
     struct ggml_tensor * shared_head_norm      = nullptr;
+
+    // qwen4exp: the MTP head's mixer; collapses the streams and stands in for the output norm
+    struct ggml_tensor * hc_head_norm          = nullptr;
+    struct ggml_tensor * hc_head_down          = nullptr;
+    struct ggml_tensor * hc_head_up            = nullptr;
 };
 
 struct llama_layer_switch_lora {
@@ -780,6 +799,12 @@ struct llama_model {
     ggml_backend_buffer_type_t select_buft(int il) const;
 
     bool has_tensor_overrides() const;
+    int32_t moe_expert_cache_slots() const;
+    void build_moe_sources();
+    const std::vector<llama_moe_source_group> & moe_sources() const;
+
+    void prefetch_rows(const ggml_tensor * tensor, const int32_t * rows, size_t n_rows) const;
+    void prefetch_rows(const ggml_tensor * tensor, const ggml_tensor * indices) const;
 
     const struct ggml_tensor * get_tensor(const char * name) const;
 
@@ -801,6 +826,8 @@ struct llama_model {
     virtual void load_arch_hparams(llama_model_loader & ml) = 0;
     virtual void load_arch_tensors(llama_model_loader & ml) = 0;
     virtual std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const = 0;
+
+    virtual bool graph_supports_recurrent_sparse_snapshots() const;
 
 protected:
     llama_model_params params;

@@ -66,6 +66,7 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--yarn-beta-slow N` | YaRN: high correction dim or alpha (default: -1.00)<br/>(env: LLAMA_ARG_YARN_BETA_SLOW) |
 | `--yarn-beta-fast N` | YaRN: low correction dim or beta (default: -1.00)<br/>(env: LLAMA_ARG_YARN_BETA_FAST) |
 | `-kvo, --kv-offload, -nkvo, --no-kv-offload` | whether to enable KV cache offloading (default: enabled)<br/>(env: LLAMA_ARG_KV_OFFLOAD) |
+| `--live-context-workspace, --no-live-context-workspace` | for supported attention caches, grow the compute workspace reservation with the padded live physical KV extent instead of reserving the full context up front (default: disabled)<br/>(env: LLAMA_ARG_LIVE_CONTEXT_WORKSPACE) |
 | `--repack, -nr, --no-repack` | whether to enable weight repacking (default: enabled)<br/>(env: LLAMA_ARG_REPACK) |
 | `--no-host` | bypass host buffer allowing extra buffers to be used<br/>(env: LLAMA_ARG_NO_HOST) |
 | `-ctk, --cache-type-k TYPE` | KV cache data type for K<br/>allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1<br/>(default: f16)<br/>(env: LLAMA_ARG_CACHE_TYPE_K) |
@@ -153,6 +154,9 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `-j, --json-schema SCHEMA` | JSON schema to constrain generations (https://json-schema.org/), e.g. `{"type": "object"}` for any JSON object |
 | `-jf, --json-schema-file FILE` | File containing a JSON schema to constrain generations (https://json-schema.org/), e.g. `{"type": "object"}` for any JSON object |
 | `-bs, --backend-sampling` | enable backend sampling (experimental) (default: disabled)<br/>(env: LLAMA_ARG_BACKEND_SAMPLING) |
+| `--decode-overlap` | experimental: overlap backend-sampled decode or the first MTP draft step with result processing (default: disabled)<br/>(env: LLAMA_ARG_DECODE_OVERLAP) |
+| `--decode-boundary-overlap` | experimental: overlap decode boundary preparation and update CUDA graphs (use with --decode-overlap) (default: disabled)<br/>(env: LLAMA_ARG_DECODE_BOUNDARY_OVERLAP) |
+| `--ple-prefetch` | experimental: advise lazy row pages before CPU GET_ROWS (Linux; Windows unvalidated) (default: disabled)<br/>(env: LLAMA_ARG_PLE_PREFETCH) |
 
 
 ### Server-specific params
@@ -260,6 +264,7 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--spec-draft-n-cpu-moe, --spec-draft-ncmoe, -ncmoed, --n-cpu-moe-draft N` | keep the Mixture of Experts (MoE) weights of the first N layers in the CPU for the draft model<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE) |
 | `--spec-draft-n-max N` | number of tokens to draft for speculative decoding (default: 3)<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_MAX) |
 | `--spec-draft-n-min N` | minimum number of draft tokens to use for speculative decoding (default: 0)<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_MIN) |
+| `--spec-mtp-rs-planes N` | total target recurrent-state planes for draft-mtp, including the current state (default: 0, use spec-draft-n-max + 1); see [capped MTP recurrent planes](../../docs/speculative.md#capped-mtp-recurrent-planes)<br/>(env: LLAMA_ARG_SPEC_MTP_RS_PLANES) |
 | `--spec-synth-len L` | target mean synthetic acceptance length, including the target token (benchmarking only)<br/>(env: LLAMA_ARG_SPEC_SYNTH_LEN) |
 | `--spec-synth-rates P0,P1,...` | comma-separated unconditional per-position synthetic acceptance probabilities (benchmarking only)<br/>(env: LLAMA_ARG_SPEC_SYNTH_RATES) |
 | `--spec-draft-p-split, --draft-p-split P` | speculative decoding split probability (default: 0.10)<br/>(env: LLAMA_ARG_SPEC_DRAFT_P_SPLIT) |
@@ -453,6 +458,28 @@ docker run -p 8080:8080 -v /path/to/models:/models ghcr.io/ggml-org/llama.cpp:se
 # or, with CUDA:
 docker run -p 8080:8080 -v /path/to/models:/models --gpus all ghcr.io/ggml-org/llama.cpp:server-cuda -m models/7B/ggml-model.gguf -c 512 --host 0.0.0.0 --port 8080 --n-gpu-layers 99
 ```
+
+### Experimental lazy row prefetch
+
+With staged decode overlap, the existing worker advises its known PLE rows after publishing the ordinary embedding. That path bypasses CPU `GET_ROWS`, so it does not advise the same gather twice.
+
+`--ple-prefetch` (or `LLAMA_ARG_PLE_PREFETCH=1`) opts into page advice for lazy-backed row reads. It is disabled by default. The CPU `GET_ROWS` path uses the actual runtime index tensor, without model or tensor-name matching, in both prefill and decode. It supports contiguous 2D source tables and I32 index vectors, including strided index vectors. Other layouts, non-lazy tables, and GPU gathers retain ordinary reads. Models must already mark the source for lazy loading; the flag does not change loading or placement. Decode overlap is not required.
+
+Performance validation is Linux-only. Windows support is experimental and performance-unvalidated: builds targeting Windows 8 or newer (`_WIN32_WINNT >= 0x0602`) use dynamically resolved `PrefetchVirtualMemory`, with at most 256 merged requested page ranges per call. Older targets or a missing API retain ordinary reads. Other POSIX platforms have not been validated. Advice uses bounded scratch, does not pin the table or predict tokens, and does not change row order or dequantization. Cold reads can benefit, but resident reads have extra overhead and advice can block under memory pressure. Advice failure retains ordinary demand reads. Omit the flag and unset its environment variable (or set it to `0`) to disable advice. The CPU backend extension is optional; requesting this flag with a backend build that lacks it fails explicitly.
+
+Windows testers should compare repeated runs with the flag off/on in alternating order, keeping the exact prompt bytes, sampling, model placement, context, cache slots, and overlap setting fixed. Verify output token IDs before comparing speeds. Report Windows/build versions, storage type, RAM/VRAM, decode tokens/s and p50/p95/p99/max token intervals, separately for cold and warm reads. Include late-context intervals when testing microstutters, advice-related memory pressure, errors, and clean shutdown. Do not clear global caches or change system memory settings. Linux results do not establish a Windows speedup.
+
+### Experimental decode overlap
+
+`--decode-boundary-overlap` (or `LLAMA_ARG_DECODE_BOUNDARY_OVERLAP=1`) opts into CUDA graph updates at decode boundaries, asynchronous graph preparation when the existing safety checks permit it, and advance reservation of sampled-input staging buffers. Use it with `--decode-overlap`. It is disabled by default and selected at context creation; changing it requires restarting the server. Without this option, the previous boundary synchronization, graph recreation, and staging allocation behavior remain in use. Unsupported layouts retain synchronized allocation. Output tokens can differ from the default path. `GGML_CUDA_GRAPH_PROFILE=1` logs host capture, update, launch, and cleanup durations; these are not measurements of GPU idle time.
+
+`--decode-overlap` queues at most one additional decode batch while the CPU processes the previous results. Without speculative decoding, it supports parallel requests on one CUDA GPU with greedy or stochastic backend sampling. Supported sampling includes temperature, dynamic temperature, top-k, top-p, min-p, static logit bias, and `ignore_eos`. Each queued batch contains one token per eligible sequence and must fit in one microbatch. Token embeddings must be on that GPU, for example with `-ot token_embd.weight=CUDA0`. Initial support covers owned ordinary KV caches, standard sliding-window KV caches, and ordinary hybrid KV/recurrent memory, with compatible graph inputs and all compute operations on the same GPU. The request sampler applies model-declared token suppression and EOS suppression on the GPU. Recurrent models reserve one extra state snapshot for rollback. Borrowed caches, other sliding-window types, standalone recurrent inputs, sparse selected-token snapshots, and unvalidated indexed attention or custom inputs use normal decode.
+
+Flash Next supports host token embeddings with `-np 1` and an owned hybrid/indexer cache with one-token recurrent rollback on one CUDA GPU. When both embedding tables are host-readable and CUDA stream memory operations support graph capture, a worker prepares the next token embedding and PLE rows in bounded pinned buffers while the GPU graph is queued. The graph waits for each buffer at its first consumer, allowing the preceding layer to execute while PLE rows are gathered. The full PLE table remains pageable. The log reports whether staged inputs are enabled. If staging is unavailable, decode finishes and reads the sampled token before preparing and queuing the next graph. Parallel contexts use normal decode. With MTP enabled, the draft-step overlap described below is used instead.
+
+Non-lazy grammar, finite reasoning budgets, probability output, LoRA, multimodal input, and history-dependent or unsupported sampling use the normal path. A lazy grammar can use overlap while it is waiting for its trigger, including reasoning and ordinary content. When a token activates the grammar, the server discards the queued position, restores the saved sampler state, and uses normal decode before sampling a constrained token. With one server slot, unlimited reasoning with `reasoning_control` uses the same handoff when a `reasoning_end` control arrives. A batch containing an incompatible request uses normal decode. New prompt admission discards queued positions before rebuilding the batch; overlap can resume once the batch qualifies. Stops and cancellation drain and discard the affected slot's extra queued position and restore its saved sampler RNG state before releasing it. The CPU prepares inputs in two pinned buffers and uploads them on the compute stream, then queues the next decode before waiting for the preceding tokens. Graph rebuilds and allocation changes still synchronize. Both throughput and the extra snapshot memory cost should be measured for the intended workload.
+
+With `--spec-type draft-mtp`, overlap queues the first forward pass of the next draft after target sampling, acceptance, and rollback finish. The GPU can execute that pass while the CPU formats and streams the accepted tokens. The next draft consumes the queued outputs; target sampling and verification remain unchanged. This path supports a single MTP head on one CUDA GPU with an independent draft cache that permits one-token rollback, including shared compute workspace and capped MTP replay state. It does not require backend sampling or GPU token embeddings. Multiple MTP heads, shared target/draft KV, probability output, LoRA, multimodal input, and parent/child requests use ordinary MTP. Stops, cancellation, prompt admission, and state changes drain and remove the queued draft positions before reuse. The log reports queued, reused, and discarded MTP steps. Parallel MTP with `--kv-unified` currently has a separate verification-layout failure even with overlap disabled; use separate per-sequence caches for this configuration.
 
 ## Using with CURL
 
@@ -1146,6 +1173,8 @@ In *router mode* the query param `?model={model_id}` has to be set. This endpoin
 | `llamacpp:spec_decode_num_accepted_tokens_per_pos_total` | Counter | Accepted tokens per draft position (labeled `position="N"`; absent when spec-decode is off or before the first completed speculative request). |
 
 ### POST `/slots/{id_slot}?action=save`: Save the prompt cache of the specified slot to a file.
+
+Slot save and restore are not supported while speculative decoding is enabled.
 
 *Options:*
 

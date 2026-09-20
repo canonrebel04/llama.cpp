@@ -1322,6 +1322,11 @@ bool common_params_parse(int argc, char ** argv, common_params & params, llama_e
             throw std::invalid_argument("error: --spec-draft-n-min-adaptive must be in [1, --spec-draft-n-max]");
         }
 
+        const int32_t target_ubatch_effective = ctx_arg.params.n_ubatch > 0
+                ? std::min(ctx_arg.params.n_batch, ctx_arg.params.n_ubatch)
+                : ctx_arg.params.n_batch;
+        common_validate_speculative_params(
+                ctx_arg.params.speculative, ctx_arg.params.n_ubatch, target_ubatch_effective);
         params.lr.init();
     } catch (const std::invalid_argument & ex) {
         fprintf(stderr, "%s\n", ex.what());
@@ -2326,6 +2331,27 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_sampling().set_env("LLAMA_ARG_BACKEND_SAMPLING"));
     add_opt(common_arg(
+        {"--decode-overlap"},
+        "experimental: overlap backend-sampled decode or the first MTP draft step with result processing (default: disabled)",
+        [](common_params & params) {
+            params.decode_overlap = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECODE_OVERLAP"));
+    add_opt(common_arg(
+        {"--decode-boundary-overlap"},
+        "experimental: overlap decode boundary preparation and update CUDA graphs (use with --decode-overlap) (default: disabled)",
+        [](common_params & params) {
+            params.decode_boundary_overlap = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECODE_BOUNDARY_OVERLAP"));
+    add_opt(common_arg(
+        {"--ple-prefetch"},
+        "experimental: advise lazy row pages before CPU GET_ROWS (Linux; Windows unvalidated) (default: disabled)",
+        [](common_params & params) {
+            params.ple_prefetch = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PLE_PREFETCH"));
+    add_opt(common_arg(
         {"--pooling"}, "{none,mean,cls,last,rank}",
         "pooling type for embeddings, use model default if unspecified",
         [](common_params & params, const std::string & value) {
@@ -2434,6 +2460,55 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.no_kv_offload = !value;
         }
     ).set_env("LLAMA_ARG_KV_OFFLOAD"));
+    add_opt(common_arg(
+        {"--kv-cpu-pinned"},
+        {"--no-kv-cpu-pinned"},
+        string_format("use pinned host buffers for CPU-resident KV cache storage when available; with operation offload enabled, attention compute can remain on the accelerator (default: %s)",
+                      params.kv_cpu_pinned ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.kv_cpu_pinned = value;
+        }
+    ).set_env("LLAMA_ARG_KV_CPU_PINNED"));
+    add_opt(common_arg(
+        {"--recurrent-state-offload"},
+        {"--no-recurrent-state-offload"},
+        string_format("offload recurrent state independently of attention KV storage (default: %s)",
+                      params.recurrent_state_offload ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.recurrent_state_offload = value;
+        }
+    ).set_env("LLAMA_ARG_RECURRENT_STATE_OFFLOAD"));
+    add_opt(common_arg(
+        {"--phase-aware-workspace"},
+        {"--no-phase-aware-workspace"},
+        string_format("resize compute workspaces between prompt processing and token generation; later prompt turns regrow the prompt reservation (default: %s)",
+                      params.phase_aware_workspace ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.phase_aware_workspace = value;
+        }
+    ).set_env("LLAMA_ARG_PHASE_AWARE_WORKSPACE"));
+    add_opt(common_arg(
+        {"--live-context-workspace"},
+        {"--no-live-context-workspace"},
+        string_format("for supported attention caches, grow the compute workspace reservation with the padded live "
+                      "physical KV extent instead of reserving the full context up front (default: %s)",
+                      params.live_context_workspace ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.live_context_workspace = value;
+        }
+    ).set_env("LLAMA_ARG_LIVE_CONTEXT_WORKSPACE"));
+    add_opt(common_arg(
+        {"--kv-gpu-layers"}, "N",
+        string_format("with --no-kv-offload, keep the first N independently owned attention KV layers device-resident "
+                      "for standard and direct hybrid caches. Unsupported specialized caches ignore this option "
+                      "(default: %d)", params.kv_gpu_layers),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("--kv-gpu-layers must not be negative");
+            }
+            params.kv_gpu_layers = value;
+        }
+    ).set_env("LLAMA_ARG_KV_GPU_LAYERS"));
     add_opt(common_arg(
         {"--repack"},
         {"-nr", "--no-repack"},
@@ -2851,6 +2926,31 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             llm_add_n_cpu_ffn_overrides(value, LLM_FFN_DENSE_REGEX, params.tensor_buft_overrides);
         }
     ).set_env("LLAMA_ARG_N_CPU_FFN"));
+    add_opt(common_arg(
+        {"--moe-expert-cache-size"}, "N",
+        "MoE expert cache: keep N expert slabs per expert tensor on GPU with LRU eviction; "
+        "cold experts live in CPU pinned memory. 0 disables (default). "
+        "When enabled, all MoE expert tensors use the cache regardless of --cpu-moe or --n-cpu-moe.",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.n_moe_expert_cache_slots = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE_SIZE"));
+    add_opt(common_arg(
+        {"--moe-expert-cache-host-pinned-mb"}, "N",
+        "MoE expert cache: model-wide pinned host budget in MiB, including source weights and staging. 0 keeps full pinning (default).",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            if ((uint64_t) value > SIZE_MAX / (1024 * 1024)) {
+                throw std::invalid_argument("pinned host budget is too large");
+            }
+            params.moe_expert_cache_host_pinned_size = (size_t) value * 1024 * 1024;
+        }
+    ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE_HOST_PINNED_MB"));
     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
     add_opt(common_arg(
         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",
@@ -4009,6 +4109,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ));
     add_opt(common_arg(
+        {"--experimental-logs"},
+        "Enable experimental debug logs",
+        [](common_params & params) {
+            params.experimental_logs = true;
+        }
+    ));
+    add_opt(common_arg(
         {"--offline"},
         "Offline mode: forces use of cache, prevents network access",
         [](common_params & params) {
@@ -4193,6 +4300,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"));
     add_opt(common_arg(
+        {"--spec-draft-kv-gpu-layers", "--kv-gpu-layers-draft"}, "N",
+        "override target KV placement for the separate draft context and keep the first N independently owned "
+        "draft attention KV layers device-resident; shared KV layers follow their owner "
+        "(default: inherit target KV placement)",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("--spec-draft-kv-gpu-layers must not be negative");
+            }
+            params.speculative.draft.kv_gpu_layers = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI})
+      .set_env("LLAMA_ARG_SPEC_DRAFT_KV_GPU_LAYERS"));
+    add_opt(common_arg(
         {"--spec-draft-override-tensor", "-otd", "--override-tensor-draft"}, "<tensor name pattern>=<buffer type>,...",
         "override tensor buffer type for draft model", [](common_params & params, const std::string & value) {
             parse_tensor_buffer_overrides(value, params.speculative.draft.tensor_buft_overrides);
@@ -4243,6 +4363,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.draft.n_ctx = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_CTX"));
+    add_opt(common_arg(
+        {"--spec-draft-moe-expert-cache-size"}, "N",
+        "MoE expert cache size for the draft model; 0 disables the draft cache "
+        "(default: inherit --moe-expert-cache-size)",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.speculative.draft.n_moe_expert_cache_slots = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI})
+      .set_env("LLAMA_ARG_SPEC_DRAFT_MOE_EXPERT_CACHE_SIZE"));
 
     add_opt(common_arg(
         {"--spec-draft-n-max"}, "N",
@@ -4261,6 +4393,24 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.draft.n_min = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MIN"));
+    add_opt(common_arg(
+        {"--spec-mtp-rs-planes"}, "N",
+        "total target recurrent-state planes for draft-mtp, including the current state (default: 0, allocate spec-draft-n-max + 1)",
+        [](common_params & params, int value) {
+            params.speculative.mtp_rs_planes = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_MTP_RS_PLANES"));
+    add_opt(common_arg(
+        {"--spec-draft-ubatch-size", "--ubatch-size-draft", "-ubd"}, "N",
+        "physical maximum batch size for the draft context (default: 0, inherit target ubatch); "
+        "draft-mtp requires 0 or the target ubatch",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.speculative.draft.n_ubatch = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_UBATCH"));
     add_opt(common_arg(
         {"--spec-synth-len"}, "L",
         "target mean synthetic acceptance length, including the target token (benchmarking only)",

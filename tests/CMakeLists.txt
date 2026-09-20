@@ -152,6 +152,8 @@ llama_build(test-recurrent-state-rollback.cpp)
 llama_build(test-save-load-state.cpp)
 
 if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
+    target_compile_definitions(test-recurrent-state-rollback PRIVATE LLAMA_TEST_RECURRENT_INTERNALS)
+
     # these tests are disabled on Windows because they use internal functions not exported with LLAMA_API (when building with shared libraries)
     llama_build_and_test(test-unicode.cpp)
     llama_build_and_test(test-sampling.cpp)
@@ -194,6 +196,27 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
 
     llama_build(test-llama-archs.cpp)
 
+    llama_test(
+        test-llama-archs
+        NAME test-phase-aware-workspace
+        LABEL main
+        ARGS --test-phase-workspace
+    )
+
+    llama_test(
+        test-llama-archs
+        NAME test-live-context-workspace
+        LABEL main
+        ARGS --test-live-context-workspace
+    )
+
+    llama_test(
+        test-llama-archs
+        NAME test-speculative-limits
+        LABEL main
+        ARGS --test-speculative-limits
+    )
+
     set(MODEL_DIR "${CMAKE_CURRENT_BINARY_DIR}/test-models/")
     file(MAKE_DIRECTORY "${MODEL_DIR}")
 
@@ -207,40 +230,13 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         FIXTURES_SETUP generate-models
     )
 
+    # Test recurrent/hybrid state rollback on all generated recurrent/hybrid dummy models
     llama_test(
         test-recurrent-state-rollback
         LABEL main
-        ARGS -m "${MODEL_DIR}/qwen35-dense.gguf"
+        ARGS -m "${MODEL_DIR}"
     )
     set_tests_properties(test-recurrent-state-rollback PROPERTIES
-        FIXTURES_REQUIRED generate-models
-    )
-
-    llama_test(
-        test-recurrent-state-rollback
-        NAME test-recurrent-state-rollback-nemotron-h
-        LABEL main
-        ARGS -m "${MODEL_DIR}/nemotron_h-dense.gguf"
-    )
-    set_tests_properties(test-recurrent-state-rollback-nemotron-h PROPERTIES
-        FIXTURES_REQUIRED generate-models
-    )
-    llama_test(
-        test-recurrent-state-rollback
-        NAME test-recurrent-state-rollback-dsv4
-        LABEL main
-        ARGS -m "${MODEL_DIR}/deepseek4-moe.gguf"
-    )
-    set_tests_properties(test-recurrent-state-rollback-dsv4 PROPERTIES
-        FIXTURES_REQUIRED generate-models
-    )
-    llama_test(
-        test-recurrent-state-rollback
-        NAME test-recurrent-state-rollback-kimi-k3
-        LABEL main
-        ARGS -m "${MODEL_DIR}/kimi-k3-moe.gguf"
-    )
-    set_tests_properties(test-recurrent-state-rollback-kimi-k3 PROPERTIES
         FIXTURES_REQUIRED generate-models
     )
 
@@ -309,25 +305,11 @@ endif()
 
 # TODO: make this test (and others) not link `libllama` as it is not needed [TAG_TESTS_LLAMA_LINK]
 llama_build_and_test(test-backend-ops.cpp)
-if (NOT LLAMA_USE_SYSTEM_GGML)
-    llama_build(test-moe-cache.cpp)
-    if (GGML_CUDA)
-        # The test compares the cache's budget grants against cudaMemGetInfo,
-        # the same query the cache uses. On UMA devices (GB10, Jetson) the
-        # backend device memory API reports /proc/meminfo instead, so the
-        # reserve calculation must match the cache's own view.
-        find_package(CUDAToolkit QUIET)
-        if (CUDAToolkit_FOUND)
-            target_compile_definitions(test-moe-cache PRIVATE GGML_CUDA=1)
-            target_include_directories(test-moe-cache PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
-            target_link_libraries(test-moe-cache PRIVATE CUDA::cudart)
-        endif()
-    endif()
-    llama_test(test-moe-cache LABEL "main;backend")
-    # The test exits 77 when no CUDA device is present. ctest only treats that
-    # as a skip when SKIP_RETURN_CODE says so; without it, every CPU-only
-    # runner records the skip as a failure.
-    set_tests_properties(test-moe-cache PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+if (GGML_RPC AND UNIX AND NOT GGML_BACKEND_DL)
+    target_compile_definitions(test-backend-ops PRIVATE GGML_TEST_RPC)
+    target_link_libraries(test-backend-ops PRIVATE ggml-rpc)
+    llama_test(test-backend-ops NAME test-backend-ops-rpc-gdn-rejection LABEL main ARGS --rpc-gdn-rejection)
+    set_tests_properties(test-backend-ops-rpc-gdn-rejection PROPERTIES TIMEOUT 15)
 endif()
 
 llama_build_and_test(test-moe-cache-fit.cpp)
@@ -404,4 +386,37 @@ llama_build(test-export-graph-ops.cpp)
 if (TARGET gguf-model-data)
     target_link_libraries(test-export-graph-ops PRIVATE gguf-model-data)
     target_compile_definitions(test-export-graph-ops PRIVATE LLAMA_HF_FETCH)
+endif()
+
+# This test uses internal symbols that are not exported from Windows DLLs.
+#
+# The test sources are plain C++ (no device kernels, only host-side cudaMalloc /
+# cudaMemcpyAsync calls), so it does not require enable_language(CUDA) in
+# this directory scope. CUDA headers + libcudart come in via CUDA::cudart.
+if (GGML_CUDA AND NOT GGML_BACKEND_DL AND TARGET ggml-cuda AND (NOT WIN32 OR NOT BUILD_SHARED_LIBS))
+    find_package(CUDAToolkit REQUIRED)
+    add_executable(test-moe-cache
+        test-moe-cache.cpp
+        test-moe-cache-fixtures.cpp
+        test-moe-cache-registry.cpp
+        test-moe-cache-plans.cpp
+        test-moe-cache-graphs.cpp
+        test-moe-cache-dispatch.cpp
+        test-moe-cache-mmid.cpp
+        test-moe-cache-staging.cpp
+        test-moe-cache-multigpu.cpp
+    )
+    target_compile_features(test-moe-cache PRIVATE cxx_std_17)
+    target_link_libraries(test-moe-cache PRIVATE llama ggml-cuda ggml-base CUDA::cudart)
+    target_include_directories(test-moe-cache PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src)
+    add_test(NAME test-moe-cache COMMAND test-moe-cache)
+    add_test(NAME test-moe-cache-layer COMMAND test-moe-cache --grouped-layer-only)
+    set_tests_properties(test-moe-cache-layer PROPERTIES LABELS "main")
+    add_test(NAME test-moe-cache-multigpu COMMAND test-moe-cache --grouped-multigpu-only)
+    set_tests_properties(test-moe-cache-multigpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "main;multigpu")
+    set_property(TEST test-moe-cache PROPERTY LABELS "main")
+    # The test exits 77 when no CUDA device is present. ctest only treats that
+    # as a skip when SKIP_RETURN_CODE says so; without it, every CPU-only
+    # runner records the skip as a failure.
+    set_tests_properties(test-moe-cache PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 endif()

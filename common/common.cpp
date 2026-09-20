@@ -6,6 +6,8 @@
 #include "fit.h"
 #include "log.h"
 #include "llama.h"
+#include "../src/llama-ext.h"
+#include "../ggml/src/ggml-backend-moe.h"
 #include "sampling.h"
 #include "speculative.h"
 #include "unicode.h"
@@ -1299,6 +1301,9 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     auto cparams = common_context_params_to_llama(params);
 
     if (params.fit_params) {
+        if (params.n_moe_expert_cache_slots > 0) {
+            COM_WRN("%s", "--fit does not account for MoE expert cache pools; set -fit off and size --moe-expert-cache-size manually\n");
+        }
         COM_TRC("%s", "fitting params to device memory ...\n");
         COM_TRC("%s", "(for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n");
         // Snapshot the pre-fit state so a failed fit can be rolled back to a
@@ -1323,6 +1328,8 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         auto cparams_dft = common_context_params_to_llama(params_dft);
         if (spec_mtp) {
             cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+        } else if (has_draft) {
+            cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_DRAFT;
         }
         cparams_dft.n_rs_seq = 0;
 
@@ -1450,6 +1457,20 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
 
     pimpl->context.reset(lctx);
+    if (params.ple_prefetch && !llama_set_ple_prefetch(lctx, true)) {
+        COM_ERR("%s", "failed to enable lazy row prefetch\n");
+        pimpl->context.reset();
+        return;
+    }
+
+    for (size_t i = 0; i < ggml_backend_reg_count(); ++i) {
+        ggml_backend_reg_t reg = ggml_backend_reg_get(i);
+        auto set_debug_fn = (ggml_backend_moe_cache_set_debug_t) ggml_backend_reg_get_proc_address(
+                reg, GGML_BACKEND_MOE_CACHE_SET_DEBUG_PROC_NAME);
+        if (set_debug_fn != nullptr) {
+            set_debug_fn(params.experimental_logs);
+        }
+    }
 
     set_process_priority(params.cpuparams.priority);
 
@@ -1731,7 +1752,9 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
         mparams.devices = params.devices.data();
     }
 
-    mparams.n_gpu_layers    = params.n_gpu_layers;
+    mparams.n_gpu_layers          = params.n_gpu_layers;
+    mparams.moe_expert_cache_slots = params.n_moe_expert_cache_slots;
+    mparams.moe_expert_cache_host_pinned_size = params.moe_expert_cache_host_pinned_size;
     mparams.main_gpu        = params.main_gpu;
     mparams.split_mode      = params.split_mode;
     mparams.load_mode       = params.load_mode;
@@ -1772,10 +1795,14 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
 struct llama_context_params common_context_params_to_llama(const common_params & params) {
     auto cparams = llama_context_default_params();
 
+    cparams.decode_boundary_overlap = params.decode_boundary_overlap;
     cparams.n_ctx             = params.n_ctx;
     cparams.n_seq_max         = params.n_parallel;
     cparams.n_outputs_max     = params.n_outputs_max;
     cparams.n_rs_seq          = params.speculative.need_n_rs_seq();
+    if (params.decode_overlap) {
+        cparams.n_rs_seq = std::max(cparams.n_rs_seq, 1u);
+    }
     cparams.n_outputs_max     = std::max(params.n_outputs_max, 0);
     cparams.n_outputs_max_per_seq = std::max(params.n_outputs_max_per_seq, 0);
     cparams.n_batch           = params.n_batch;
@@ -1805,6 +1832,11 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.cb_eval           = params.cb_eval;
     cparams.cb_eval_user_data = params.cb_eval_user_data;
     cparams.offload_kqv       = !params.no_kv_offload;
+    cparams.kv_cpu_pinned     = params.kv_cpu_pinned;
+    cparams.recurrent_state_offload = params.recurrent_state_offload;
+    cparams.kv_gpu_layers     = (uint32_t) std::max(0, params.kv_gpu_layers);
+    cparams.phase_aware_workspace = params.phase_aware_workspace;
+    cparams.live_context_workspace = params.live_context_workspace;
     cparams.no_perf           = params.no_perf;
     cparams.op_offload        = !params.no_op_offload;
     cparams.sched_async_cpu   = params.sched_async_cpu;
@@ -2331,7 +2363,7 @@ bool common_prompt_batch_decode(
 }
 
 size_t common_prompt_checkpoint::size() const {
-    return data_tgt.size() + data_dft.size() + data_spec.size();
+    return data_tgt.size() + data_dft.size() + data_spec.size() + data_mtp.size();
 }
 
 bool common_prompt_checkpoint::empty() const {
@@ -2347,6 +2379,7 @@ void common_prompt_checkpoint::clear() {
     data_tgt.clear();
     data_dft.clear();
     data_spec.clear();
+    data_mtp.clear();
 }
 
 void common_prompt_checkpoint::update_pos(
@@ -2437,4 +2470,5 @@ void common_prompt_checkpoint::clear_tgt() {
 void common_prompt_checkpoint::clear_dft() {
     data_dft.clear();
     data_spec.clear();
+    data_mtp.clear();
 }

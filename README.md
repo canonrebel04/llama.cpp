@@ -11,6 +11,10 @@
 
 ---
 
+## GenerelSchwerz fork
+
+This maintained fork adds an opt-in CUDA MoE expert cache, bounded host pinning, and speculative decoding controls. See the [fork feature guide](docs/fork-features.md) for configuration, defaults, limitations, and internal backend integration.
+
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
 <div align="center">

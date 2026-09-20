@@ -1196,6 +1196,7 @@ struct ggml_cuda_device_info {
         size_t  vmm_granularity;                // granularity of virtual memory
         size_t  total_vram;
         int     warp_size;                      // Number of threads in a dispatch
+        int     max_grid_size[3];                // Maximum grid dimensions
         bool    supports_cooperative_launch;    // whether cooperative launch is supported
         int     physical_device;                // backing physical CUDA device for this (virtual) device
         int     physical_share_count;           // number of (virtual) devices sharing this device's physical GPU
@@ -1222,6 +1223,7 @@ struct ggml_cuda_pool {
 
     virtual void * alloc(size_t size, size_t * actual_size) = 0;
     virtual void free(void * ptr, size_t size) = 0;
+    virtual size_t trim() { return 0; }
 };
 
 template<typename T>
@@ -1281,7 +1283,19 @@ struct ggml_tensor_extra_gpu {
 #define USE_CUDA_GRAPH
 #endif
 
+class ggml_cuda_moe_graph_plan;
+
 struct ggml_cuda_graph {
+    std::shared_ptr<ggml_cuda_moe_graph_plan> moe_graph_plan;
+    const void * moe_coverage_nodes = nullptr;
+    uint64_t moe_coverage_epoch = 0;
+    uint64_t moe_coverage_mmid_fingerprint = 0;
+    uint64_t moe_resource_fingerprint = 0;
+    uint64_t moe_registry_generation = 0;
+    std::vector<std::weak_ptr<void>> moe_resource_witnesses;
+    int32_t moe_coverage_n_nodes = 0;
+    uint32_t moe_coverage_mmid_count = 0;
+    int64_t last_used_time = 0;
 #ifdef USE_CUDA_GRAPH
     ~ggml_cuda_graph() {
         if (instance != nullptr) {
@@ -1298,7 +1312,7 @@ struct ggml_cuda_graph {
     bool disable_due_to_gpu_arch = false;
     bool warmup_complete = false;
     uint64_t uid = 0;
-    int64_t last_used_time = 0;
+    uint64_t execution_semantic_key = 0;
     struct node_properties {
         ggml_tensor node;
         void *   node_src_data_ptrs[GGML_MAX_SRC];
@@ -1465,10 +1479,18 @@ struct ggml_cuda_stream_context {
     }
 };
 
+class ggml_cuda_moe_grouped_context;
+struct ggml_cuda_moe_ids_cache_state;
+
 struct ggml_backend_cuda_context {
     int device;
     std::string name;
     cudaEvent_t copy_event = nullptr;
+    bool decode_boundary_overlap = false;
+    std::once_flag moe_grouped_context_once;
+    ggml_cuda_moe_grouped_context * moe_grouped_context = nullptr;
+    std::vector<std::unique_ptr<ggml_backend_cuda_context>> moe_router_contexts;
+    std::unique_ptr<ggml_cuda_moe_ids_cache_state> moe_ids_cache;
 
     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {nullptr};
@@ -1485,14 +1507,13 @@ struct ggml_backend_cuda_context {
     // release-after-use path (avoids the legacy pool retaining the temp; ref llama.cpp #22107).
     bool fa_f16_use_pool = false;
 
-#ifdef USE_CUDA_GRAPH
-    // Map from first_node_ptr to cuda_graph - allows multiple graphs per context
-    // when the computation is split across CPU/GPU (e.g., with --n-cpu-moe)
-    std::unordered_map<const void *, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
+    std::unordered_map<uint64_t, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
+
+    static const size_t max_cuda_graphs = 64;
 
     int64_t last_graph_eviction_sweep = 0;
 
-    ggml_cuda_graph * cuda_graph(const void * first_node_ptr) {
+    ggml_cuda_graph * cuda_graph(uint64_t graph_key) {
         const int64_t time_now = ggml_time_us();
 
         // sweep every 5s, evicting cuda graphs unused for >=10s
@@ -1507,14 +1528,27 @@ struct ggml_backend_cuda_context {
             }
         }
 
-        auto it = cuda_graphs.find(first_node_ptr);
+        auto it = cuda_graphs.find(graph_key);
         if (it == cuda_graphs.end()) {
-            it = cuda_graphs.emplace(first_node_ptr, std::make_unique<ggml_cuda_graph>()).first;
+            while (cuda_graphs.size() >= max_cuda_graphs) {
+                auto lru = cuda_graphs.begin();
+                for (auto c = cuda_graphs.begin(); c != cuda_graphs.end(); ++c) {
+                    if (c->second->last_used_time < lru->second->last_used_time) {
+                        lru = c;
+                    }
+                }
+                cuda_graphs.erase(lru);
+            }
+            it = cuda_graphs.emplace(graph_key, std::make_unique<ggml_cuda_graph>()).first;
         }
         it->second->last_used_time = time_now;
         return it->second.get();
     }
 
+    void certify_moe_graph(ggml_cgraph * cgraph);
+    bool recover_moe_graph(ggml_cgraph * cgraph, ggml_cuda_graph * graph);
+
+#ifdef USE_CUDA_GRAPH
     // Check if any CUDA graph is enabled for this context (used by kernels that need to know
     // if graphs are in use without having access to the specific graph key)
     bool any_cuda_graph_enabled() const {
@@ -1537,10 +1571,7 @@ struct ggml_backend_cuda_context {
     }
 #endif // USE_CUDA_GRAPH
 
-    explicit ggml_backend_cuda_context(int device) :
-        device(device),
-        name(GGML_CUDA_NAME + std::to_string(device)) {
-    }
+    explicit ggml_backend_cuda_context(int device);
 
     ggml_cuda_stream_context concurrent_stream_context;
 
@@ -1596,6 +1627,7 @@ struct ggml_backend_cuda_context {
 struct ggml_cuda_mm_fusion_args_host {
     const ggml_tensor * x_bias = nullptr;
     const ggml_tensor * gate = nullptr;
+    const ggml_tensor * gate_ids = nullptr;
     const ggml_tensor * gate_bias = nullptr;
     const ggml_tensor * x_scale = nullptr;
     const ggml_tensor * gate_scale = nullptr;
@@ -1605,6 +1637,7 @@ struct ggml_cuda_mm_fusion_args_host {
 struct ggml_cuda_mm_fusion_args_device {
     const void * x_bias = nullptr;
     const void * gate = nullptr;
+    const int32_t * gate_ids = nullptr;
     const void * gate_bias = nullptr;
     const void * x_scale = nullptr;
     const void * gate_scale = nullptr;

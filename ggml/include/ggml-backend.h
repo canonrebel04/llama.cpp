@@ -217,6 +217,11 @@ extern "C" {
     typedef ggml_backend_buffer_type_t * (*ggml_backend_dev_get_extra_bufts_t)(ggml_backend_dev_t device);
     // Set the abort callback for the backend
     typedef void                         (*ggml_backend_set_abort_callback_t)(ggml_backend_t backend, ggml_abort_callback abort_callback, void * abort_callback_data);
+
+    // Optional row-read advice. Inputs are ready; the callback must not modify tensors or throw.
+    typedef void (*ggml_backend_get_rows_callback)(const struct ggml_tensor * table, const struct ggml_tensor * indices, void * user_data);
+    // Configure while idle. User data must outlive the backend and any plans that retain it.
+    typedef void (*ggml_backend_set_get_rows_callback_t)(ggml_backend_t backend, ggml_backend_get_rows_callback callback, void * user_data);
     // Get a list of feature flags supported by the backend (returns a NULL-terminated array)
     struct ggml_backend_feature {
         const char * name;
@@ -319,7 +324,11 @@ extern "C" {
     GGML_API ggml_backend_sched_t ggml_backend_sched_new(ggml_backend_t * backends, ggml_backend_buffer_type_t * bufts, int n_backends, size_t graph_size, bool parallel, bool op_offload);
     GGML_API void                 ggml_backend_sched_free(ggml_backend_sched_t sched);
 
-    // Initialize backend buffers from a measure graph
+    GGML_API bool                 ggml_backend_sched_set_resizable(ggml_backend_sched_t sched, ggml_backend_sched_t owner);
+    GGML_API void                 ggml_backend_sched_get_buffer_state(ggml_backend_sched_t sched, uint64_t * generation, uint64_t * shrink_generation);
+    GGML_API void                 ggml_backend_sched_request_buffer_shrink(ggml_backend_sched_t sched);
+
+    // Measure backend buffers from a graph. Reset the scheduler before changing assignments.
     GGML_API void                 ggml_backend_sched_reserve_size(ggml_backend_sched_t sched, struct ggml_cgraph * measure_graph, size_t * sizes);
     GGML_API bool                 ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph * measure_graph); // returns success
 
@@ -345,8 +354,14 @@ extern "C" {
 
     // Allocate and compute graph on the backend scheduler
     GGML_API bool                 ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph); // returns success
+    // Caller must ensure metadata and buffer reset/init are safe during prior execution. Storage changes still synchronize.
+    GGML_API bool                 ggml_backend_sched_alloc_graph_async(ggml_backend_sched_t sched, struct ggml_cgraph * graph);
     GGML_API enum ggml_status     ggml_backend_sched_graph_compute(ggml_backend_sched_t sched, struct ggml_cgraph * graph);
     GGML_API enum ggml_status     ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sched, struct ggml_cgraph * graph);
+    // The stamped certificate in each backend cgraph is valid only during its graph_compute callback.
+    // Backends must synchronously validate and copy required fields before returning and must not retain its address.
+    GGML_API enum ggml_status     ggml_backend_sched_graph_compute_ext(ggml_backend_sched_t sched, struct ggml_cgraph * graph, const struct ggml_graph_execution_certificate * certificate);
+    GGML_API enum ggml_status     ggml_backend_sched_graph_compute_async_ext(ggml_backend_sched_t sched, struct ggml_cgraph * graph, const struct ggml_graph_execution_certificate * certificate);
     GGML_API void                 ggml_backend_sched_synchronize(ggml_backend_sched_t sched);
 
     // Reset all assignments and allocators - must be called before changing the node backends or allocating a new graph.

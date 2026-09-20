@@ -24,6 +24,7 @@
 
 #include "ggml.h"
 #include "ggml-cpp.h"
+#include "../ggml/src/ggml-backend-moe.h"
 
 #include <algorithm>
 #include <cassert>
@@ -355,6 +356,9 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
 }
 
 llama_model * llama_model_create(llm_arch arch, const llama_model_params & params) {
+    if (params.split_mode == LLAMA_SPLIT_MODE_TENSOR && params.moe_expert_cache_slots > 0) {
+        throw std::runtime_error("MoE expert caching does not support tensor split; use --split-mode layer or --moe-expert-cache-size 0");
+    }
     llama_model * model = llama_model_mapping(arch, params);
 
     if (model != nullptr) {
@@ -1204,6 +1208,7 @@ struct llama_model::impl {
 
     // contexts where the model tensors metadata is stored as well as the corresponding buffers:
     std::vector<std::pair<ggml_context_ptr, std::vector<ggml_backend_buffer_ptr>>> ctxs_bufs;
+    std::vector<llama_moe_source_group> moe_sources;
 
     buft_list_t cpu_buft_list;
     std::map<ggml_backend_dev_t, buft_list_t> gpu_buft_list;
@@ -1800,7 +1805,33 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         // a lazy context is mapped whatever the load mode, but the memory-fit pass maps nothing
         const bool is_lazy_mapped = ctx_key.lazy && !ml.no_alloc;
 
-        if ((ml.use_mmap || is_lazy_mapped) && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft) {
+        ggml_backend_reg_t buft_reg = ggml_backend_dev_backend_reg(dev);
+        auto is_moe_cache_buft_fn = buft_reg != nullptr ?
+            (ggml_backend_moe_cache_is_buffer_type_t) ggml_backend_reg_get_proc_address(
+                buft_reg, GGML_BACKEND_MOE_CACHE_IS_BUFFER_TYPE_PROC_NAME) : nullptr;
+        const bool is_moe_cache_buft = is_moe_cache_buft_fn != nullptr && is_moe_cache_buft_fn(buft);
+        if (ml.use_mmap && use_mmap_buffer && is_moe_cache_buft) {
+            GGML_ASSERT(!ml.no_alloc);
+            auto buffer_from_host_ptr_fn = (ggml_backend_moe_cache_buffer_from_host_ptr_t)
+                    ggml_backend_reg_get_proc_address(buft_reg, GGML_BACKEND_MOE_CACHE_BUFFER_FROM_HOST_PTR_PROC_NAME);
+            if (buffer_from_host_ptr_fn == nullptr) {
+                throw std::runtime_error(format("%s does not support buffers from mapped host memory", ggml_backend_buft_name(buft)));
+            }
+            for (uint32_t idx = 0; idx < ml.files.size(); idx++) {
+                void * addr = nullptr;
+                size_t first, last; // NOLINT
+                ml.get_mapping_range(&first, &last, &addr, idx, ctx);
+                if (first >= last) {
+                    continue;
+                }
+                ggml_backend_buffer_t buf = buffer_from_host_ptr_fn(buft, (char *) addr + first, last - first);
+                if (buf == nullptr) {
+                    throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
+                }
+                bufs.emplace_back(buf);
+                buf_map.emplace(idx, buf);
+            }
+        } else if ((ml.use_mmap || is_lazy_mapped) && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft) {
             GGML_ASSERT(!ml.no_alloc);
             for (uint32_t idx = 0; idx < ml.files.size(); idx++) {
                 // only the mmap region containing the tensors in the model is mapped to the backend buffer
@@ -1881,6 +1912,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
+    build_moe_sources();
+
     if (ml.no_alloc) {
         return true;
     }
@@ -1897,6 +1930,55 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     for (auto & [ctx, buf_map] : ctx_buf_maps) {
         if (!ml.load_all_data(ctx, buf_map, use_mlock ? &pimpl->mlock_mmaps : NULL, params.progress_callback, params.progress_callback_user_data)) {
             return false;
+        }
+    }
+
+    if (params.moe_expert_cache_host_pinned_size > 0) {
+        std::vector<ggml_backend_moe_candidate_group_v2> groups;
+        std::vector<ggml_backend_moe_candidate_tensor_v2> tensors;
+        std::unordered_set<ggml_backend_buffer_type_t> owners;
+        std::unordered_set<const ggml_tensor *> seen;
+        for (const auto & group : moe_sources()) {
+            const uint32_t index = groups.size();
+            groups.push_back({group.layout, group.domain, group.route_present ? 0u : uint32_t(GGML_BACKEND_MOE_CANDIDATE_GROUP_V2_FLAG_INCOMPLETE), 0});
+            for (const auto & bank : group.banks) {
+                tensors.push_back({bank.tensor, index, bank.role, bank.status, 0, 0});
+                seen.insert(bank.tensor);
+            }
+        }
+        for (const auto & named : tensors_by_name) {
+            auto * tensor = named.second;
+            if (tensor->buffer == nullptr) {
+                continue;
+            }
+            auto buft = ggml_backend_buffer_get_type(tensor->buffer);
+            auto dev = ggml_backend_buft_get_device(buft);
+            auto reg = dev != nullptr ? ggml_backend_dev_backend_reg(dev) : nullptr;
+            auto is_cached = reg != nullptr ? (ggml_backend_moe_cache_is_buffer_type_t) ggml_backend_reg_get_proc_address(
+                reg, GGML_BACKEND_MOE_CACHE_IS_BUFFER_TYPE_PROC_NAME) : nullptr;
+            if (is_cached != nullptr && is_cached(buft)) {
+                owners.insert(buft);
+                if (seen.insert(tensor).second) {
+                    tensors.push_back({tensor, UINT32_MAX, GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_INVALID, GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_UNCLASSIFIED, 0, 0});
+                }
+            }
+        }
+        ggml_backend_moe_candidate_snapshot_v2 sources = {};
+        sources.magic = GGML_BACKEND_MOE_CANDIDATE_SNAPSHOT_V2_MAGIC;
+        sources.abi_version = GGML_BACKEND_MOE_CANDIDATE_SNAPSHOT_V2_VERSION;
+        sources.struct_size = sizeof(sources);
+        sources.n_slots = params.moe_expert_cache_slots;
+        sources.groups = groups.data();
+        sources.n_groups = groups.size();
+        sources.tensors = tensors.data();
+        sources.n_tensors = tensors.size();
+        for (auto buft : owners) {
+            auto reg = ggml_backend_dev_backend_reg(ggml_backend_buft_get_device(buft));
+            auto configure = (ggml_backend_moe_cache_configure_sources_t) ggml_backend_reg_get_proc_address(
+                reg, GGML_BACKEND_MOE_CACHE_CONFIGURE_SOURCES_PROC_NAME);
+            if (configure == nullptr || !configure(buft, &sources)) {
+                throw std::runtime_error("unable to reserve the bounded MoE host source budget");
+            }
         }
     }
 
@@ -2074,6 +2156,25 @@ ggml_tensor * llama_model_base::create_tensor(llama_model_loader & ml, const LLM
     return ml.create_tensor(
         hparams, &pimpl->cpu_buft_list, pimpl->dev_input.buft_list, pimpl->dev_output.buft_list, buft_list_layer,
         tn, ne, flags);
+}
+
+bool llama_model::graph_supports_recurrent_sparse_snapshots() const {
+    return false;
+}
+
+void llama_model::prefetch_rows(const ggml_tensor * tensor, const int32_t * rows, size_t n_rows) const {
+    if (!tensor || !tensor->data || !ggml_is_matrix(tensor) || !ggml_is_contiguous(tensor)) {
+        return;
+    }
+    for (const auto & mapping : pimpl->mappings) {
+        mapping->prefetch_rows(tensor->data, tensor->nb[1], rows, n_rows);
+    }
+}
+
+void llama_model::prefetch_rows(const ggml_tensor * tensor, const ggml_tensor * indices) const {
+    for (const auto & mapping : pimpl->mappings) {
+        mapping->prefetch_rows(tensor, indices);
+    }
 }
 
 std::string llama_model::arch_name() const {
@@ -2423,6 +2524,76 @@ bool llama_model::has_tensor_overrides() const {
     return pimpl->has_tensor_overrides;
 }
 
+int32_t llama_model::moe_expert_cache_slots() const {
+    return params.moe_expert_cache_slots;
+}
+
+void llama_model::build_moe_sources() {
+    std::vector<llama_moe_source_group> result;
+    result.reserve(layers.size() * 2);
+    auto append = [&](uint32_t domain, bool route_present, ggml_tensor * gate, ggml_tensor * up, ggml_tensor * gate_up, ggml_tensor * down) -> llama_moe_source_group * {
+        if (!gate && !up && !gate_up && !down) {
+            return nullptr;
+        }
+        uint32_t layout = GGML_BACKEND_MOE_CANDIDATE_LAYOUT_INVALID;
+        if (gate && up && !gate_up && down) {
+            layout = GGML_BACKEND_MOE_CANDIDATE_LAYOUT_SEPARATE;
+        } else if (!gate && !up && gate_up && down) {
+            layout = GGML_BACKEND_MOE_CANDIDATE_LAYOUT_FUSED_GATE_UP;
+        } else if (!gate && up && !gate_up && down) {
+            layout = GGML_BACKEND_MOE_CANDIDATE_LAYOUT_UNGATED;
+        }
+        result.push_back({layout, domain, route_present, {}});
+        auto & banks = result.back().banks;
+        ggml_tensor * weights[] = {gate, up, gate_up, down};
+        const uint32_t roles[] = {
+            GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_GATE_WEIGHT,
+            GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_UP_WEIGHT,
+            GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_GATE_UP_WEIGHT,
+            GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_DOWN_WEIGHT,
+        };
+        for (uint32_t i = 0; i < 4; ++i) {
+            if (weights[i]) {
+                banks.push_back({weights[i], roles[i], GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_ROUTED_BASE});
+            }
+        }
+        return &result.back();
+    };
+    for (size_t il = 0; il < layers.size(); ++il) {
+        const auto & layer = layers[il];
+        auto * group = append(GGML_BACKEND_MOE_CANDIDATE_DOMAIN_V2_ORDINARY, layer.ffn_gate_inp != nullptr,
+            layer.ffn_gate_exps, layer.ffn_up_exps, layer.ffn_gate_up_exps, layer.ffn_down_exps);
+        if (group) {
+            group->layer = static_cast<int32_t>(il);
+            auto add = [&](ggml_tensor * tensor, uint32_t role, uint32_t status) {
+                if (tensor) {
+                    group->banks.push_back({tensor, role, status});
+                }
+            };
+            add(layer.ffn_gate_exps_s, GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_GATE_SCALE, GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_OUTPUT_SCALE);
+            add(layer.ffn_up_exps_s, layer.ffn_gate_up_exps ? GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_GATE_UP_SCALE : GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_UP_SCALE, GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_OUTPUT_SCALE);
+            add(layer.ffn_down_exps_s, GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_DOWN_SCALE, GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_OUTPUT_SCALE);
+            add(layer.ffn_gate_exps_b, GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_GATE_BIAS, GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_OUTPUT_BIAS);
+            add(layer.ffn_up_exps_b, GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_UP_BIAS, GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_OUTPUT_BIAS);
+            add(layer.ffn_gate_up_exps_b, GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_GATE_UP_BIAS, GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_OUTPUT_BIAS);
+            add(layer.ffn_down_exps_b, GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_DOWN_BIAS, GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_OUTPUT_BIAS);
+            add(layer.ffn_gate_exps_in_s, GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_GATE_INPUT_SCALE, GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_INPUT_SCALE);
+            add(layer.ffn_up_exps_in_s, GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_UP_INPUT_SCALE, GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_INPUT_SCALE);
+            add(layer.ffn_down_exps_in_s, GGML_BACKEND_MOE_CANDIDATE_BANK_ROLE_DOWN_INPUT_SCALE, GGML_BACKEND_MOE_CANDIDATE_STATUS_V2_INPUT_SCALE);
+        }
+        auto * chunk = append(GGML_BACKEND_MOE_CANDIDATE_DOMAIN_V2_CHUNK, true, layer.ffn_gate_chexps,
+                              layer.ffn_up_chexps, nullptr, layer.ffn_down_chexps);
+        if (chunk) {
+            chunk->layer = static_cast<int32_t>(il);
+        }
+    }
+    pimpl->moe_sources = std::move(result);
+}
+
+const std::vector<llama_moe_source_group> & llama_model::moe_sources() const {
+    return pimpl->moe_sources;
+}
+
 const ggml_tensor * llama_model::get_tensor(const char * name) const {
     auto it = std::find_if(tensors_by_name.begin(), tensors_by_name.end(),
             [name](const std::pair<std::string, ggml_tensor *> & it) {
@@ -2460,6 +2631,13 @@ ggml_tensor * llama_model::get_rope_factors(const llama_cparams & cparams, int i
 
 llama_memory_i * llama_model::create_memory(const llama_memory_params & params, const llama_cparams & cparams) const {
     llama_memory_i * res;
+    const llama_memory_placement_options placement = {
+        cparams.kv_cpu_pinned,
+        cparams.kv_gpu_layers,
+        cparams.offload_kqv || cparams.recurrent_state_offload,
+    };
+    llama_memory_placement_options specialized_placement = placement;
+    specialized_placement.gpu_resident_layers = 0;
 
     switch (arch) {
         // Models that need specific instantiation should be handled in the
@@ -2501,7 +2679,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         hparams.swa_type,
                         nullptr,
                         filter_idx,
-                        nullptr);
+                        nullptr,
+                        specialized_placement);
             } break;
         case LLM_ARCH_GLM_DSA:
         case LLM_ARCH_DEEPSEEK32:
@@ -2529,7 +2708,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             nullptr,
                             filter,
                             nullptr,
-                            nullptr);
+                            nullptr,
+                            placement);
                 } else {
                     // Main context: DSA cache for the trunk layers only - the nextn
                     // layer(s) are never attended by the trunk graph.
@@ -2553,7 +2733,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             hparams.swa_type,
                             filter_mla,
                             filter_lid,
-                            nullptr);
+                            nullptr,
+                            specialized_placement);
                 }
             } break;
         case LLM_ARCH_HY_V4:
@@ -2576,7 +2757,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             nullptr,
                             nullptr,
                             nullptr,
-                            nullptr);
+                            nullptr,
+                            placement);
                 } else {
                     // only "full" layers own an indexer, so the shared layers need no indexer cache
                     llama_kv_cache::layer_filter_cb filter_lid = [&](uint32_t il) { return hparams.is_indexer_full(il); };
@@ -2595,7 +2777,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             hparams.swa_type,
                             nullptr,
                             filter_lid,
-                            nullptr);
+                            nullptr,
+                            specialized_placement);
                 }
             } break;
         case LLM_ARCH_DOTS3NOTE:
@@ -2623,7 +2806,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             nullptr,
                             filter,
                             nullptr,
-                            nullptr);
+                            nullptr,
+                            placement);
                 } else {
                     // main context: DSA cache for the trunk full-attention layers plus a window-sized SWA cache
                     llama_kv_cache::layer_filter_cb filter_mla = nullptr;
@@ -2646,7 +2830,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             1,
                             filter_mla,
                             filter_lid,
-                            nullptr);
+                            nullptr,
+                            specialized_placement);
                 }
             } break;
         case LLM_ARCH_DEEPSEEK4:
@@ -2674,7 +2859,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             nullptr,
                             filter_mtp,
                             nullptr,
-                            nullptr);
+                            nullptr,
+                            specialized_placement);
                 } else {
                     res = new llama_kv_cache_dsv4(
                             *this,
@@ -2690,7 +2876,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             1,
                             cparams.n_rs_seq,
                             nullptr,
-                            nullptr);
+                            nullptr,
+                            specialized_placement);
                 }
             } break;
         case LLM_ARCH_DFLASH:
@@ -2714,7 +2901,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             nullptr,
                             nullptr,
                             nullptr,
-                            nullptr);
+                            nullptr,
+                            specialized_placement);
                     break;
                 }
             }
@@ -2728,7 +2916,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                 const bool mtp_on_hybrid_qwen =
                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
                     (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE ||
-                     arch == LLM_ARCH_BAILINGMOE3);
+                     arch == LLM_ARCH_BAILINGMOE3 || arch == LLM_ARCH_QWEN4EXP);
 
                 const bool mtp_on_hybrid_nemotron =
                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_NEMOTRON_H_MOE;
@@ -2738,7 +2926,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             *this,
                             GGML_TYPE_F32,
                             GGML_TYPE_F32,
-                            cparams.offload_kqv,
+                            placement.recurrent_offload,
                             std::max((uint32_t) 1, cparams.n_seq_max),
                             cparams.n_seq_max,
                             cparams.n_rs_seq,
@@ -2789,12 +2977,13 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* attn_kv_size      */ cparams.n_ctx_seq,
                             /* attn_n_ubatch     */ cparams.n_ubatch,
                             /* attn_n_pad        */ 1,
+                            /* attn_offload      */ cparams.offload_kqv,
+                            /* placement         */ specialized_placement,
                             /* recurrent_type_r  */ GGML_TYPE_F32,
                             /* recurrent_type_s  */ GGML_TYPE_F32,
                             /* recurrent_rs_size */ std::max((uint32_t) 1, cparams.n_seq_max),
                             /* n_seq_max         */ cparams.n_seq_max,
                             /* n_rs_seq          */ cparams.n_rs_seq,
-                            /* offload           */ cparams.offload_kqv,
                             /* unified           */ cparams.kv_unified,
                             /* filter_attn       */ std::move(filter_attn),
                             /* filter_recr       */ std::move(filter_recr));
@@ -2815,6 +3004,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* n_seq_max         */ cparams.n_seq_max,
                             /* n_rs_seq          */ cparams.n_rs_seq,
                             /* offload           */ cparams.offload_kqv,
+                            /* placement         */ placement,
                             /* unified           */ cparams.kv_unified,
                             /* filter_attn       */ std::move(filter_attn),
                             /* filter_recr       */ std::move(filter_recr),
@@ -2829,12 +3019,13 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* attn_n_pad        */ 1,
                             /* attn_n_swa        */ hparams.n_swa,
                             /* attn_swa_type     */ hparams.swa_type,
+                            /* attn_offload      */ cparams.offload_kqv,
+                            /* placement         */ placement,
                             /* recurrent_type_k  */ GGML_TYPE_F32,
                             /* recurrent_type_v  */ GGML_TYPE_F32,
                             /* recurrent_kv_size */ std::max((uint32_t) 1, cparams.n_seq_max),
                             /* n_seq_max         */ cparams.n_seq_max,
                             /* n_rs_seq          */ cparams.n_rs_seq,
-                            /* offload           */ cparams.offload_kqv,
                             /* unified           */ cparams.kv_unified,
                             /* filter_attn       */ std::move(filter_attn),
                             /* filter_recr       */ std::move(filter_recr));
@@ -2901,7 +3092,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                     mem_other,
                                     filter,
                                     reuse,
-                                    share);
+                                    share,
+                                    specialized_placement);
                         } else {
                             res = new llama_kv_cache_iswa(
                                     *this,
@@ -2918,7 +3110,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                     nullptr,
                                     filter,
                                     reuse,
-                                    share);
+                                    share,
+                                    specialized_placement);
                         }
                     } else {
                         GGML_ASSERT(!hparams.is_swa_any());
@@ -2939,7 +3132,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 nullptr,
                                 filter,
                                 nullptr,
-                                nullptr);
+                                nullptr,
+                                placement);
                     }
                 }
             }
@@ -2978,6 +3172,8 @@ llama_model_params llama_model_default_params() {
         /*.devices                     =*/ nullptr,
         /*.tensor_buft_overrides       =*/ nullptr,
         /*.n_gpu_layers                =*/ -1,
+        /*.moe_expert_cache_slots      =*/ 0,
+        /*.moe_expert_cache_host_pinned_size =*/ 0,
         /*.split_mode                  =*/ LLAMA_SPLIT_MODE_LAYER,
         /*.load_mode                   =*/ LLAMA_LOAD_MODE_AUTO,
         /*.lazy_mode                   =*/ LLAMA_LAZY_MODE_AUTO,
@@ -2988,6 +3184,7 @@ llama_model_params llama_model_default_params() {
         /*.kv_overrides                =*/ nullptr,
         /*.moe_cache_profile           =*/ nullptr,
         /*.moe_cache_slots             =*/ 0,
+        /*.model_shared                =*/ nullptr,
         /*.vocab_only                  =*/ false,
         /*.check_tensors               =*/ false,
         /*.use_extra_bufts             =*/ true,
@@ -3008,6 +3205,16 @@ void llama_free_model(llama_model * model) {
 }
 
 void llama_model_free(llama_model * model) {
+    if (model && model->moe_expert_cache_slots() > 0) {
+        for (size_t i = 0; i < ggml_backend_reg_count(); ++i) {
+            ggml_backend_reg_t reg = ggml_backend_reg_get(i);
+            auto log_stats_fn = (ggml_backend_moe_cache_log_and_reset_stats_t) ggml_backend_reg_get_proc_address(
+                    reg, GGML_BACKEND_MOE_CACHE_LOG_AND_RESET_STATS_PROC_NAME);
+            if (log_stats_fn != nullptr) {
+                log_stats_fn();
+            }
+        }
+    }
     delete model;
 }
 
