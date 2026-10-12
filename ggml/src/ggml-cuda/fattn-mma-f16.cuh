@@ -630,6 +630,14 @@ static __device__ __forceinline__ void flash_attn_ext_q_prefetch_raw(
 // low nibble = elem 2c, high nibble = elem 2c+1. Hence one byte qs[col_offset+c] yields
 // the half2 for tile column c. sizeof(block_turbo4_0)-driven pointer math; never assume
 // 66/68 or a qs offset constant.
+// Writes one half2 element (row, c) of a turbo K/V tile at the same (possibly XOR-swizzled)
+// offset the f16 loader writes to and load_ldmatrix_swizzled reads from. When the tile stride
+// is padded (not bank-aligned) the swizzle is the identity, i.e. the plain linear layout.
+template<int stride_tile>
+static __device__ __forceinline__ void turbo_store_h2(half2 * const __restrict__ tile_KV, const int row, const int c, const half2 v) {
+    *swizzle<stride_tile>(tile_KV, row*stride_tile + c, row) = v;
+}
+
 template<int stride_tile, int nbatch_fa, int nthreads, bool oob_check>
 static __device__ __forceinline__ void flash_attn_ext_turbo4_load_tile(
         const char * const __restrict__ KV_raw, half2 * const __restrict__ tile_KV,
@@ -640,7 +648,7 @@ static __device__ __forceinline__ void flash_attn_ext_turbo4_load_tile(
     for (int row = tid; row < nbatch_fa; row += nthreads) {
         if (oob_check && row >= i_sup) {
             for (int c = 0; c < D2; ++c) {
-                tile_KV[row*stride_tile + c] = make_half2(0.0f, 0.0f);
+                turbo_store_h2<stride_tile>(tile_KV, row, c, make_half2(0.0f, 0.0f));
             }
             continue;
         }
@@ -667,7 +675,7 @@ static __device__ __forceinline__ void flash_attn_ext_turbo4_load_tile(
             for (; c < c_end; ++c) {
                 const int in_blk = (col_offset + c) % (QK_TURBO4 / 2);
                 const uint8_t byte = blk->qs[in_blk];
-                tile_KV[row*stride_tile + c] = __halves2half2(scaled[byte & 0xF], scaled[byte >> 4]);
+                turbo_store_h2<stride_tile>(tile_KV, row, c, __halves2half2(scaled[byte & 0xF], scaled[byte >> 4]));
             }
         }
     }
@@ -689,7 +697,7 @@ static __device__ __forceinline__ void flash_attn_ext_turbo3_load_tile(
 #pragma unroll
     for (int row = tid; row < nbatch_fa; row += nthreads) {
         if (oob_check && row >= i_sup) {
-            for (int c = 0; c < D2; ++c) tile_KV[row*stride_tile + c] = make_half2(0.0f, 0.0f);
+            for (int c = 0; c < D2; ++c) turbo_store_h2<stride_tile>(tile_KV, row, c, make_half2(0.0f, 0.0f));
             continue;
         }
         const char * row_ptr = KV_raw + (int64_t)row * stride_bytes;
@@ -707,7 +715,7 @@ static __device__ __forceinline__ void flash_attn_ext_turbo3_load_tile(
             const uint8_t idx1 = ((qs_byte >> (shift+2)) & 0x3) | (((sgn_byte >> (j0 % 8 + 1)) & 0x1) << 2);
             const half lo = __float2half(TURBO_CENTROIDS_3BIT_FATTN[idx0] * norm);
             const half hi = __float2half(TURBO_CENTROIDS_3BIT_FATTN[idx1] * norm);
-            tile_KV[row*stride_tile + c] = __halves2half2(lo, hi);
+            turbo_store_h2<stride_tile>(tile_KV, row, c, __halves2half2(lo, hi));
         }
     }
 }
@@ -725,7 +733,7 @@ static __device__ __forceinline__ void flash_attn_ext_turbo2_load_tile(
 #pragma unroll
     for (int row = tid; row < nbatch_fa; row += nthreads) {
         if (oob_check && row >= i_sup) {
-            for (int c = 0; c < D2; ++c) tile_KV[row*stride_tile + c] = make_half2(0.0f, 0.0f);
+            for (int c = 0; c < D2; ++c) turbo_store_h2<stride_tile>(tile_KV, row, c, make_half2(0.0f, 0.0f));
             continue;
         }
         const char * row_ptr = KV_raw + (int64_t)row * stride_bytes;
@@ -742,7 +750,7 @@ static __device__ __forceinline__ void flash_attn_ext_turbo2_load_tile(
             const uint8_t idx1 = (qs_byte >> (shift+2)) & 0x3;
             const half lo = __float2half(TURBO_CENTROIDS_2BIT_FATTN[idx0] * norm);
             const half hi = __float2half(TURBO_CENTROIDS_2BIT_FATTN[idx1] * norm);
-            tile_KV[row*stride_tile + c] = __halves2half2(lo, hi);
+            turbo_store_h2<stride_tile>(tile_KV, row, c, __halves2half2(lo, hi));
         }
     }
 }
