@@ -27,7 +27,10 @@ for the same type is **not** loadable here without remapping.
 | 56 | Q2_0S | Anbeeld/beellama.cpp | 32 / 10 | KV cache (beellama's "q2_0" for KV; upstream Q2_0=42 is a different format); beellama ID 47 |
 | 57 | Q2_1 | Anbeeld/beellama.cpp | 32 / 12 | KV cache; beellama ID 48 |
 
-Next free ID: **58**. Reserve ranges per branch below and keep them in sync.
+| 142 | PQ2_0 | PrismML llama.cpp fork | 128 / 34 | weights; **same ID as PrismML** so their GGUFs load unchanged |
+| 143 | PTQ1_0 | PrismML llama.cpp fork | 128 / 28 | weights (ternary, 1.75 bpw); **same ID as PrismML** |
+
+Next free ID: **58** (58-141 free; 142-143 taken by Prism types; GGML_TYPE_COUNT is 144). Reserve ranges per branch below and keep them in sync.
 
 ## llama_ftype additions
 
@@ -39,6 +42,9 @@ Next free ID: **58**. Reserve ranges per branch below and keep them in sync.
 | MOSTLY_Q5_CR | 45 |
 | MOSTLY_Q6_CR | 46 |
 | MOSTLY_TQ3_4S | 47 |
+| MOSTLY_PQ2_0 | 141 (PrismML value) |
+| MOSTLY_PQ2_0_LEGACY | 142 (older PrismML value, same format) |
+| MOSTLY_PTQ1_0 | 143 (PrismML value) |
 
 ## GGUF compatibility / remapping
 

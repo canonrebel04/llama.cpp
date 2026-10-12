@@ -375,3 +375,11 @@
 #define ggml_gemm_q8_0_4x4_q8_0_generic ggml_gemm_q8_0_4x4_q8_0
 #define ggml_gemm_q8_0_4x8_q8_0_generic ggml_gemm_q8_0_4x8_q8_0
 #endif
+
+// PQ2_0 / PTQ1_0: SIMD kernels exist for x86 and ARM only
+#if !(defined(__aarch64__) || defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64) || \
+      defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64))
+#define ggml_vec_dot_pq2_0_q8_K_generic ggml_vec_dot_pq2_0_q8_K
+#define ggml_vec_dot_ptq1_0_q8_0_generic ggml_vec_dot_ptq1_0_q8_0
+#endif
+
