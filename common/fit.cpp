@@ -531,10 +531,39 @@ static void common_params_fit_impl(
             LOG_TRC("%s: getting device memory data for the extra model at a context size of %" PRIu32 ":\n",
                 __func__, cparams->n_ctx);
 
+            // fork: measure the extra model against a context of the main model (ctx_other), as the
+            // speculative context is created at runtime. Drafts that share the target's embeddings
+            // (EAGLE3 / DFlash / Gemma4 assistant) cannot be created without it, and an MTP context
+            // needs the target's memory to size its own buffers.
+            auto measure_with_parent = [&](const llama_model_params * mparams_parent, std::vector<ggml_backend_dev_t> & devs_out) {
+                common_fit_logger_guard logger_guard(log_level);
+
+                llama_model_params mparams_parent_copy = *mparams_parent;
+                mparams_parent_copy.no_alloc  = true;
+                mparams_parent_copy.load_mode = LLAMA_LOAD_MODE_NONE;
+
+                llama_model_ptr model_parent(llama_model_load_from_file(path_model, mparams_parent_copy));
+                if (model_parent == nullptr) {
+                    throw std::runtime_error("failed to load parent model");
+                }
+                llama_context_ptr ctx_parent(llama_init_from_model(model_parent.get(), *cparams));
+                if (ctx_parent == nullptr) {
+                    throw std::runtime_error("failed to create parent llama_context");
+                }
+                return common_get_device_memory_data_impl(
+                    extra->path_model, extra->mparams, extra->cparams, devs_out, ngl_extra, nct_extra, nex_extra,
+                    log_level, nullptr, ctx_parent.get());
+            };
+
             dmds_t measured;
             try {
-                measured = common_get_device_memory_data_impl(
-                    extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, log_level);
+                try {
+                    measured = measure_with_parent(mparams, devs_extra);
+                } catch (const std::runtime_error & e) {
+                    LOG_DBG("%s: measuring the extra model with a parent context failed (%s), retrying standalone\n", __func__, e.what());
+                    measured = common_get_device_memory_data_impl(
+                        extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, log_level);
+                }
             } catch (const std::runtime_error & e) {
                 // the extra model is optional, fit the main model alone rather than giving up
                 LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n", __func__, e.what());
@@ -555,6 +584,36 @@ static void common_params_fit_impl(
                     }
                 }
             }
+
+            // fork: with a split target, an MTP context (or a draft sharing tensors with the target)
+            // can end up on the main device; measure that layout too (experts on the CPU, as the
+            // canonical CPU-expert fallback places them) and keep the larger value per device
+            if (extra->shares_model && mparams->split_mode != LLAMA_SPLIT_MODE_NONE && mparams->main_gpu >= 0) {
+                try {
+                    llama_model_params mparams_main = *mparams;
+                    mparams_main.split_mode = LLAMA_SPLIT_MODE_NONE;
+                    llama_model_tensor_buft_override main_overrides[2] = {};
+                    main_overrides[0] = { common_moe_cache_tensor_override_pattern(), ggml_backend_cpu_buffer_type() };
+                    main_overrides[1] = { nullptr, nullptr };
+                    mparams_main.tensor_buft_overrides = main_overrides;
+                    mparams_main.use_extra_bufts = false;
+
+                    std::vector<ggml_backend_dev_t> devs_main;
+                    const dmds_t measured_main = measure_with_parent(&mparams_main, devs_main);
+                    for (size_t je = 0; je < devs_main.size(); je++) {
+                        for (size_t id = 0; id < devs.size(); id++) {
+                            if (devs_main[je] == devs[id]) {
+                                dmds_extra[id].mb.model   = std::max(dmds_extra[id].mb.model,   measured_main[je].mb.model);
+                                dmds_extra[id].mb.context = std::max(dmds_extra[id].mb.context, measured_main[je].mb.context);
+                                dmds_extra[id].mb.compute = std::max(dmds_extra[id].mb.compute, measured_main[je].mb.compute);
+                                break;
+                            }
+                        }
+                    }
+                } catch (const std::runtime_error & e) {
+                    LOG_DBG("%s: failed to measure the main-device layout of the extra model: %s\n", __func__, e.what());
+                }
+            }
             if (extra->shares_model) {
                 for (llama_device_memory_data & dmd : dmds_extra) {
                     dmd.mb.model = 0;
@@ -565,9 +624,14 @@ static void common_params_fit_impl(
         }
 
         for (size_t id = 0; id < dmds.size(); id++) {
+            // fork: an MTP context runs a second scheduler next to the target's, reserve the target's
+            // compute footprint once more so auto-fit does not exhaust the primary device before the
+            // MTP context is created (fork adbe59d1d)
+            const size_t compute_parent = extra->shares_model ? dmds[id].mb.compute : 0;
+
             dmds[id].mb.model   += dmds_extra[id].mb.model;
             dmds[id].mb.context += dmds_extra[id].mb.context;
-            dmds[id].mb.compute += dmds_extra[id].mb.compute;
+            dmds[id].mb.compute += dmds_extra[id].mb.compute + compute_parent;
         }
     };
 
