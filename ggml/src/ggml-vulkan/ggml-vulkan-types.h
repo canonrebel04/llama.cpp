@@ -1,8 +1,10 @@
 #pragma once
 
-#include "ggml-vulkan.h"
-
+// vulkan_core.h first: ggml-vulkan.h only declares the MoE-cache handle accessors
+// (extern "C") when VK_VERSION_1_0 is already defined
 #include <vulkan/vulkan_core.h>
+
+#include "ggml-vulkan.h"
 
 #if defined(GGML_VULKAN_RUN_TESTS) || defined(GGML_VULKAN_CHECK_RESULTS)
 #include <chrono>
