@@ -380,6 +380,14 @@ typedef struct {
 } block_tq3_1s;                         // 16 bytes total
 static_assert(sizeof(block_tq3_1s) == 16, "wrong tq3_1s block size");
 
+// TQ3_4S: WHT-rotated 3-bit weights with 4 x E3M5 scales (one per group of 8)
+// Ported from turbo-tan/llama.cpp-tq3. 4 + 12 = 16 bytes per 32 values = 4.0 bpw
+typedef struct {
+    uint8_t d[4];                       //  4 bytes: E3M5 scales
+    uint8_t qs[QK_TQ3_0 * 3 / 8];       // 12 bytes: 3-bit indices
+} block_tq3_4s;
+static_assert(sizeof(block_tq3_4s) == 16, "wrong tq3_4s block size");
+
 // TQ4_1S: WHT-rotated 4-bit weight quantization (16-level Lloyd-Max for N(0,1))
 // Block size 32, dual half-block scales (d0 for [0..15], d1 for [16..31])
 // Per block: d0(fp16) + d1(fp16) + 4-bit indices packed (16 bytes) = 20 bytes per 32 values

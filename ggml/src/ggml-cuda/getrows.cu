@@ -414,6 +414,11 @@ static void ggml_cuda_get_rows_switch_src0_type(
             get_rows_cuda_q<QK_TQ3_0, QR_TQ3_1S, dequantize_tq3_1s>(src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
             break;
+        case GGML_TYPE_TQ3_4S:
+            // TurboQuant TQ3_4S: per-pair dequant (QR=1 -> 2 consecutive elements), mirrors convert.cu.
+            get_rows_cuda_q<QK_TQ3_0, QR_TQ3_1S, dequantize_tq3_4s>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
         default:
             GGML_ABORT("%s: unsupported src0 type: %s\n", __func__, ggml_type_name(src0_type));
             break;

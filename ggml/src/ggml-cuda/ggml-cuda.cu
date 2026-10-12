@@ -5862,6 +5862,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_BF16:
                     case GGML_TYPE_TQ4_1S:
                     case GGML_TYPE_TQ3_1S:
+                    case GGML_TYPE_TQ3_4S:
                         return true;
                     default:
                         return false;
@@ -5898,6 +5899,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_IQ4_XS:
                     case GGML_TYPE_TQ4_1S:
                     case GGML_TYPE_TQ3_1S:
+                    case GGML_TYPE_TQ3_4S:
                         return true;
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_MXFP4:
