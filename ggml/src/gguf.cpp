@@ -3,6 +3,8 @@
 #include "ggml-impl.h"
 #include "gguf.h"
 
+#define QK_TQ3_4S_COMPAT 32 // block size shared by TQ3_4S and TQ4_1S
+
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
@@ -786,6 +788,44 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
 
     // store the current file offset - this is where the data section starts
     ctx->offset = gr.tell();
+
+    // fork compatibility: turbo-tan/llama.cpp-tq3 writes TQ3_4S as type 46, which is TQ4_1S here.
+    // The two types differ in block size (16 vs 20 bytes per 32 values), so the stored offsets tell
+    // them apart: if some type-46 tensor's span to the next tensor only fits TQ3_4S, and none only
+    // fits TQ4_1S, the file is a turbo-tan TQ3_4S file and every type-46 tensor is retyped to 51.
+    {
+        int n_tq3 = 0, n_tq4 = 0;
+        for (size_t i = 0; i + 1 < ctx->info.size(); ++i) {
+            const gguf_tensor_info & ti = ctx->info[i];
+            if (ti.t.type != GGML_TYPE_TQ4_1S || ctx->info[i + 1].offset < ti.offset) {
+                continue;
+            }
+            const uint64_t span  = ctx->info[i + 1].offset - ti.offset;
+            const int64_t  nblk  = ggml_nelements(&ti.t) / QK_TQ3_4S_COMPAT;
+            const uint64_t pad46 = GGML_PAD((uint64_t) nblk * ggml_type_size(GGML_TYPE_TQ4_1S), ctx->alignment);
+            const uint64_t pad51 = GGML_PAD((uint64_t) nblk * ggml_type_size(GGML_TYPE_TQ3_4S), ctx->alignment);
+            if (span == pad51 && span != pad46) { n_tq3++; }
+            if (span == pad46 && span != pad51) { n_tq4++; }
+        }
+        if (n_tq3 > 0 && n_tq4 == 0) {
+            int n_fixed = 0;
+            for (auto & ti : ctx->info) {
+                if (ti.t.type != GGML_TYPE_TQ4_1S) {
+                    continue;
+                }
+                ti.t.type  = GGML_TYPE_TQ3_4S;
+                ti.t.nb[0] = ggml_type_size(GGML_TYPE_TQ3_4S);
+                ti.t.nb[1] = ti.t.nb[0]*(ti.t.ne[0]/ggml_blck_size(GGML_TYPE_TQ3_4S));
+                for (int j = 2; j < GGML_MAX_DIMS; ++j) {
+                    ti.t.nb[j] = ti.t.nb[j - 1]*ti.t.ne[j - 1];
+                }
+                n_fixed++;
+            }
+            GGML_LOG_WARN("%s: %d tensors stored as type 46 have TQ3_4S-sized data (turbo-tan id); "
+                "treating them as TQ3_4S (id %d). Use gguf-py/gguf/scripts/gguf_fix_tq3_4s.py to fix the file.\n",
+                __func__, n_fixed, (int) GGML_TYPE_TQ3_4S);
+        }
+    }
 
     // compute the total size of the data section, taking into account the alignment
     {

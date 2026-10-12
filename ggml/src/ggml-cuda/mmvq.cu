@@ -318,8 +318,26 @@ int get_mmvq_mmid_max_batch(ggml_type type, int cc) {
     return MMVQ_MAX_BATCH_SIZE;
 }
 
+// Types the mmvq kernel switch can actually dispatch (plus the fork TQ weight types,
+// which callers route to their own fused kernels). Any other quantized type (e.g. TQ3_4S)
+// must fall through to the dequantize + cuBLAS path instead of aborting in mmvq.
+static bool ggml_cuda_mmvq_type_supported(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_Q1_0: case GGML_TYPE_Q2_0: case GGML_TYPE_Q4_0: case GGML_TYPE_Q4_1:
+        case GGML_TYPE_Q5_0: case GGML_TYPE_Q5_1: case GGML_TYPE_Q8_0: case GGML_TYPE_MXFP4:
+        case GGML_TYPE_NVFP4: case GGML_TYPE_Q2_K: case GGML_TYPE_Q3_K: case GGML_TYPE_Q4_K:
+        case GGML_TYPE_Q5_K: case GGML_TYPE_Q6_K: case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ2_XS:
+        case GGML_TYPE_IQ2_S: case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ1_S: case GGML_TYPE_IQ1_M:
+        case GGML_TYPE_IQ4_NL: case GGML_TYPE_IQ4_XS: case GGML_TYPE_IQ3_S:
+        case GGML_TYPE_TQ3_1S: case GGML_TYPE_TQ4_1S:
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
-    if (!ggml_is_quantized(type)) {
+    if (!ggml_is_quantized(type) || !ggml_cuda_mmvq_type_supported(type)) {
         return false;
     }
     // k-quants cost more to decode and mvq redoes that per column, so MMQ wins sooner.

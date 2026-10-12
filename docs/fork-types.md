@@ -36,7 +36,13 @@ Next free ID: **52**. Reserve ranges per branch below and keep them in sync.
 
 ## GGUF compatibility / remapping
 
-- turbo-tan TQ3_4S GGUFs store tensor type 46. Loading them here would misread
-  them as TQ4_1S (different block size; the loader rejects them on size mismatch).
-  Remap by rewriting the tensor-info type field 46 -> 51 (for example with a small
-  gguf-py script that copies tensors unchanged and sets `GGMLQuantizationType.TQ3_4S`).
+- turbo-tan TQ3_4S GGUFs store tensor type 46 (our TQ4_1S). Two ways to handle them:
+  1. **Fix the file (recommended):** `python gguf-py/gguf/scripts/gguf_fix_tq3_4s.py model.gguf [--dry-run] [--backup]`
+     patches the 4-byte type field 46 -> 51 in place. It checks each type-46 tensor's on-disk
+     span (offset to the next tensor, or to EOF for the last one) against the TQ3_4S size
+     (16 B / 32 values) and the TQ4_1S size (20 B / 32 values), and refuses to touch the file if any
+     type-46 tensor is a real TQ4_1S tensor or ambiguous.
+  2. **Loader auto-detection:** `gguf_init` compares the stored offsets of type-46 tensors with both
+     sizes. If at least one tensor only fits TQ3_4S and none only fits TQ4_1S, every type-46 tensor
+     in the file is treated as TQ3_4S and a warning is logged. It cannot decide from a single type-46
+     tensor that is the last tensor in the file (no following offset); fix such files with the script.
