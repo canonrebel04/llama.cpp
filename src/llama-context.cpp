@@ -332,7 +332,11 @@ llama_context::llama_context(
 
     cparams.flash_attn = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
     cparams.fused_lid    = true;
-    cparams.auto_flid    = false; // upstream disabled the auto probe
+    // fork: keep the fused Lightning Indexer auto-probe enabled (fork default). Upstream turned the
+    // probe off in #27877 and always assumes the fused op; with the probe on, a layer whose backend
+    // lacks GGML_OP_LIGHTNING_INDEXER (e.g. Vulkan/SYCL today) falls back to the non-fused graph on
+    // the same device instead of bouncing the op to the CPU. Cost: one extra graph_reserve at init.
+    cparams.auto_flid    = true;
     cparams.auto_fa    = params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO;
 
     cparams.fused_gdn_ar = true;
