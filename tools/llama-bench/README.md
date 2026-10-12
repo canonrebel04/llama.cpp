@@ -36,7 +36,7 @@ options:
   --no-warmup                               skip warmup runs before benchmarking
   --n-gen-warmup <n>                       generation tokens to run before timing (default: 1)
   -fitt, --fit-target <MiB>                 fit model to device memory with this margin per device in MiB (default: off)
-  -fitc, --fit-ctx <n>                      minimum ctx size for --fit-target (default: 4096)
+  -fitc, --fit-ctx <n>                      minimum ctx size for --fit-target (default: 0)
   -rpc, --rpc <rpc_servers>                 register RPC devices (comma separated)
 
 test parameters:
@@ -73,16 +73,16 @@ test parameters:
   -nkvo, --no-kv-offload <0|1>              (default: 0)
   -fa, --flash-attn <on|off|auto>           (default: auto)
   -dev, --device <dev0/dev1/...>            (default: auto)
-  -lm, --load-mode <none|mmap|mlock|mmap+mlock|dio>
-                                            (default: mmap)
-  -mmp, --mmap <0|1>                        deprecated; use --load-mode
-  -dio, --direct-io <0|1>                   deprecated; use --load-mode
+  -lm, --load-mode <auto|none|mmap|mlock|mmap+mlock|dio>
+                                            (default: auto)
+  -lzm, --lazy-mode <on|auto|off>           (default: auto)
   -embd, --embeddings <0|1>                 (default: 0)
   -ts, --tensor-split <ts0/ts1/..>          (default: 0)
   -ot --override-tensor <tensor name pattern>=<buffer type>;...
                                             (default: disabled)
   -nopo, --no-op-offload <0|1>              (default: 0)
   --no-host <0|1>                           (default: 0)
+  --repack <0|1>                            (default: 1)
 
 Multiple values can be given for each parameter by separating them with ','
 or by specifying the parameter multiple times. Ranges can be given as
