@@ -445,6 +445,12 @@ extern "C" {
         GGML_TYPE_Q3_1  = 55, // fork: beellama KV type
         GGML_TYPE_Q2_0S = 56, // fork: beellama KV type
         GGML_TYPE_Q2_1  = 57, // fork: beellama KV type
+        // ik_llama.cpp IQ_K types: same ids as ik_llama.cpp for GGUF compatibility (see docs/fork-types.md)
+        GGML_TYPE_IQ2_K   = 137,
+        GGML_TYPE_IQ3_K   = 138,
+        GGML_TYPE_IQ4_K   = 139,
+        GGML_TYPE_IQ5_K   = 140,
+        GGML_TYPE_IQ6_K   = 141,
         // Prism ternary types: same ids as PrismML's fork for GGUF compatibility (see docs/fork-types.md)
         GGML_TYPE_PQ2_0   = 142, // Prism group-128 Q2_0
         GGML_TYPE_PTQ1_0  = 143, // Prism group-128 ternary
