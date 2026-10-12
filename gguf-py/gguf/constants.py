@@ -6040,6 +6040,12 @@ class GGMLQuantizationType(IntEnum):
     Q5_CR   = 49
     Q6_CR   = 50
     TQ3_4S  = 51  # fork id (turbo-tan uses 46)
+    Q6_0    = 52  # fork id (beellama uses a different id)
+    Q6_1    = 53  # fork id (beellama uses a different id)
+    Q3_0    = 54  # fork id (beellama uses a different id)
+    Q3_1    = 55  # fork id (beellama uses a different id)
+    Q2_0S   = 56  # fork id (beellama uses a different id)
+    Q2_1    = 57  # fork id (beellama uses a different id)
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -6262,6 +6268,12 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.TQ3_1S:  (32, 2 + 2 + 12),
     GGMLQuantizationType.TQ4_1S:  (32, 2 + 2 + 16),
     GGMLQuantizationType.TQ3_4S:  (32, 4 + 12),
+    GGMLQuantizationType.Q6_0: (32, 2 + 16 + 8),
+    GGMLQuantizationType.Q6_1: (32, 4 + 16 + 8),
+    GGMLQuantizationType.Q3_0: (32, 2 + 4 + 8),
+    GGMLQuantizationType.Q3_1: (32, 4 + 4 + 8),
+    GGMLQuantizationType.Q2_0S: (32, 2 + 8),
+    GGMLQuantizationType.Q2_1: (32, 4 + 8),
     # same layout as Q8_0, but the rows are rotated in groups of 256 (ConvRot)
     GGMLQuantizationType.Q8_CR:   (256, 8 * (2 + 32)),
     # same layout as Q5_0, but the rows are rotated in groups of 256 (ConvRot)

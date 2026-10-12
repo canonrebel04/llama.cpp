@@ -388,6 +388,73 @@ typedef struct {
 } block_tq3_4s;
 static_assert(sizeof(block_tq3_4s) == 16, "wrong tq3_4s block size");
 
+// beellama KV-cache scalar types (Anbeeld/beellama.cpp)
+#define QK6_0 32
+typedef struct {
+    ggml_half d;              // delta
+    uint8_t   qh[QK6_0 / 4];  // upper two bits of quants
+    uint8_t   qs[QK6_0 / 2];  // lower four bits of quants
+} block_q6_0;
+static_assert(sizeof(block_q6_0) == sizeof(ggml_half) + QK6_0 / 2 + QK6_0 / 4, "wrong q6_0 block size/padding");
+
+#define QK6_1 32
+typedef struct {
+    GGML_EXTENSION union {
+        struct {
+            ggml_half d; // delta
+            ggml_half m; // min
+        } GGML_COMMON_AGGR_S;
+        ggml_half2 dm;
+    } GGML_COMMON_AGGR_U;
+    uint8_t qh[QK6_1 / 4];  // upper two bits of quants
+    uint8_t qs[QK6_1 / 2];  // lower four bits of quants
+} block_q6_1;
+static_assert(sizeof(block_q6_1) == 2 * sizeof(ggml_half) + QK6_1 / 2 + QK6_1 / 4, "wrong q6_1 block size/padding");
+
+// 3-bit: 2-bit planes in qs (byte j holds elements j, j+8, j+16, j+24), 3rd bit per element in qh
+#define QK3_0 32
+typedef struct {
+    ggml_half d;             // delta
+    uint8_t   qh[QK3_0 / 8]; // upper bit of quants
+    uint8_t   qs[QK3_0 / 4]; // lower two bits of quants
+} block_q3_0;
+static_assert(sizeof(block_q3_0) == sizeof(ggml_half) + QK3_0 / 8 + QK3_0 / 4, "wrong q3_0 block size/padding");
+
+#define QK3_1 32
+typedef struct {
+    GGML_EXTENSION union {
+        struct {
+            ggml_half d; // delta
+            ggml_half m; // min
+        } GGML_COMMON_AGGR_S;
+        ggml_half2 dm;
+    } GGML_COMMON_AGGR_U;
+    uint8_t qh[QK3_1 / 8]; // upper bit of quants
+    uint8_t qs[QK3_1 / 4]; // lower two bits of quants
+} block_q3_1;
+static_assert(sizeof(block_q3_1) == 2 * sizeof(ggml_half) + QK3_1 / 8 + QK3_1 / 4, "wrong q3_1 block size/padding");
+
+// 2-bit: 2-bit planes in qs (byte j holds elements j, j+8, j+16, j+24)
+#define QK2_0S 32
+typedef struct {
+    ggml_half d;             // delta
+    uint8_t   qs[QK2_0S / 4]; // quants, two bits each
+} block_q2_0s;
+static_assert(sizeof(block_q2_0s) == sizeof(ggml_half) + QK2_0S / 4, "wrong q2_0s block size/padding");
+
+#define QK2_1 32
+typedef struct {
+    GGML_EXTENSION union {
+        struct {
+            ggml_half d; // delta
+            ggml_half m; // min
+        } GGML_COMMON_AGGR_S;
+        ggml_half2 dm;
+    } GGML_COMMON_AGGR_U;
+    uint8_t qs[QK2_1 / 4]; // quants, two bits each
+} block_q2_1;
+static_assert(sizeof(block_q2_1) == 2 * sizeof(ggml_half) + QK2_1 / 4, "wrong q2_1 block size/padding");
+
 // TQ4_1S: WHT-rotated 4-bit weight quantization (16-level Lloyd-Max for N(0,1))
 // Block size 32, dual half-block scales (d0 for [0..15], d1 for [16..31])
 // Per block: d0(fp16) + d1(fp16) + 4-bit indices packed (16 bytes) = 20 bytes per 32 values

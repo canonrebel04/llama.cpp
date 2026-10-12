@@ -135,6 +135,26 @@ GGML_API void quantize_row_tq3_4s_ref(const float * GGML_RESTRICT x, block_tq3_4
 GGML_API void dequantize_row_tq3_4s(const block_tq3_4s * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API size_t quantize_tq3_4s(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 
+// beellama KV-cache scalar types (Anbeeld/beellama.cpp)
+GGML_API void quantize_row_q6_0_ref(const float * GGML_RESTRICT x, block_q6_0 * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_q6_0(const block_q6_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API size_t quantize_q6_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+GGML_API void quantize_row_q6_1_ref(const float * GGML_RESTRICT x, block_q6_1 * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_q6_1(const block_q6_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API size_t quantize_q6_1(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+GGML_API void quantize_row_q3_0_ref(const float * GGML_RESTRICT x, block_q3_0 * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_q3_0(const block_q3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API size_t quantize_q3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+GGML_API void quantize_row_q3_1_ref(const float * GGML_RESTRICT x, block_q3_1 * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_q3_1(const block_q3_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API size_t quantize_q3_1(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+GGML_API void quantize_row_q2_0s_ref(const float * GGML_RESTRICT x, block_q2_0s * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_q2_0s(const block_q2_0s * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API size_t quantize_q2_0s(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+GGML_API void quantize_row_q2_1_ref(const float * GGML_RESTRICT x, block_q2_1 * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_q2_1(const block_q2_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API size_t quantize_q2_1(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+
 // TQ4_1S: WHT-rotated 4-bit weight quantization (16-level Lloyd-Max)
 GGML_API void quantize_row_tq4_1s_ref(const float * GGML_RESTRICT x, block_tq4_1s * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_tq4_1s(const block_tq4_1s * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);

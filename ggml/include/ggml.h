@@ -439,7 +439,13 @@ extern "C" {
         GGML_TYPE_Q5_CR   = 49, // Q5_0 blocks of a ConvRot-rotated tensor
         GGML_TYPE_Q6_CR   = 50, // Q6_K blocks of a ConvRot-rotated tensor
         GGML_TYPE_TQ3_4S  = 51, // fork: TQ3_4S (turbo-tan id 46 remapped, see docs/fork-types.md)
-        GGML_TYPE_COUNT   = 52,
+        GGML_TYPE_Q6_0  = 52, // fork: beellama KV type
+        GGML_TYPE_Q6_1  = 53, // fork: beellama KV type
+        GGML_TYPE_Q3_0  = 54, // fork: beellama KV type
+        GGML_TYPE_Q3_1  = 55, // fork: beellama KV type
+        GGML_TYPE_Q2_0S = 56, // fork: beellama KV type
+        GGML_TYPE_Q2_1  = 57, // fork: beellama KV type
+        GGML_TYPE_COUNT   = 58,
     };
 
     // [TAG_GGML_PREC]

@@ -20,8 +20,14 @@ for the same type is **not** loadable here without remapping.
 | 49 | Q5_CR | ConvRot | | weights |
 | 50 | Q6_CR | ConvRot | | weights |
 | 51 | TQ3_4S | turbo-tan/llama.cpp-tq3 | 32 / 16 | weights; **turbo-tan uses ID 46** (collides with our TQ4_1S) |
+| 52 | Q6_0 | Anbeeld/beellama.cpp | 32 / 26 | KV cache; beellama ID 43 |
+| 53 | Q6_1 | Anbeeld/beellama.cpp | 32 / 28 | KV cache; beellama ID 44 |
+| 54 | Q3_0 | Anbeeld/beellama.cpp | 32 / 14 | KV cache; beellama ID 45 |
+| 55 | Q3_1 | Anbeeld/beellama.cpp | 32 / 16 | KV cache; beellama ID 46 |
+| 56 | Q2_0S | Anbeeld/beellama.cpp | 32 / 10 | KV cache (beellama's "q2_0" for KV; upstream Q2_0=42 is a different format); beellama ID 47 |
+| 57 | Q2_1 | Anbeeld/beellama.cpp | 32 / 12 | KV cache; beellama ID 48 |
 
-Next free ID: **52**. Reserve ranges per branch below and keep them in sync.
+Next free ID: **58**. Reserve ranges per branch below and keep them in sync.
 
 ## llama_ftype additions
 
@@ -40,3 +46,6 @@ Next free ID: **52**. Reserve ranges per branch below and keep them in sync.
   them as TQ4_1S (different block size; the loader rejects them on size mismatch).
   Remap by rewriting the tensor-info type field 46 -> 51 (for example with a small
   gguf-py script that copies tensors unchanged and sets `GGMLQuantizationType.TQ3_4S`).
+
+- beellama KV types are runtime KV-cache types only (never written into model GGUFs
+  by this fork), so the ID difference vs beellama only matters for saved session/state files.
