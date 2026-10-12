@@ -316,6 +316,13 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_TURBO2_0,
     GGML_TYPE_TURBO3_0,
     GGML_TYPE_TURBO4_0,
+    // beellama KV types (CPU reference kernels only)
+    GGML_TYPE_Q6_0,
+    GGML_TYPE_Q6_1,
+    GGML_TYPE_Q3_0,
+    GGML_TYPE_Q3_1,
+    GGML_TYPE_Q2_0S,
+    GGML_TYPE_Q2_1,
 };
 
 static ggml_type kv_cache_type_from_str(const std::string & s) {
@@ -4199,6 +4206,83 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.draft.cpuparams_batch.poll = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--reasoning-loop-guard"}, "MODE",
+        string_format("reasoning loop guard mode: off, force-close, or stop (default: %s)",
+            common_reasoning_loop_guard_mode_name(params.reasoning_loop_guard.mode)),
+        [](common_params & params, const std::string & value) {
+            params.reasoning_loop_guard.mode = common_reasoning_loop_guard_mode_from_name(value);
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_REASONING_LOOP_GUARD"));
+    add_opt(common_arg(
+        {"--reasoning-loop-min-tokens"}, "N",
+        string_format("minimum hidden reasoning tokens before loop checks (default: %d)", params.reasoning_loop_guard.min_reasoning_tokens),
+        [](common_params & params, int value) {
+            params.reasoning_loop_guard.min_reasoning_tokens = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_REASONING_LOOP_MIN_TOKENS"));
+    add_opt(common_arg(
+        {"--reasoning-loop-window"}, "N",
+        string_format("token tail window for reasoning loop checks (default: %d)", params.reasoning_loop_guard.window_tokens),
+        [](common_params & params, int value) {
+            params.reasoning_loop_guard.window_tokens = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_REASONING_LOOP_WINDOW"));
+    add_opt(common_arg(
+        {"--reasoning-loop-max-period"}, "N",
+        string_format("maximum periodic loop length to check (default: %d)", params.reasoning_loop_guard.max_period),
+        [](common_params & params, int value) {
+            params.reasoning_loop_guard.max_period = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_REASONING_LOOP_MAX_PERIOD"));
+    add_opt(common_arg(
+        {"--reasoning-loop-min-coverage"}, "N",
+        string_format("minimum repeated token coverage before loop trigger (default: %d)", params.reasoning_loop_guard.min_repeated_coverage),
+        [](common_params & params, int value) {
+            params.reasoning_loop_guard.min_repeated_coverage = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_REASONING_LOOP_MIN_COVERAGE"));
+    add_opt(common_arg(
+        {"--reasoning-loop-check-interval"}, "N",
+        string_format("accepted-token interval between loop checks (default: %d)", params.reasoning_loop_guard.check_interval),
+        [](common_params & params, int value) {
+            params.reasoning_loop_guard.check_interval = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_REASONING_LOOP_CHECK_INTERVAL"));
+    add_opt(common_arg(
+        {"--reasoning-loop-interventions"}, "N",
+        string_format("maximum force-close interventions before stop (default: %d)", params.reasoning_loop_guard.interventions_max),
+        [](common_params & params, int value) {
+            params.reasoning_loop_guard.interventions_max = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_REASONING_LOOP_INTERVENTIONS"));
+    add_opt(common_arg(
+        {"--spec-draft-ubatch-size", "-ubd"}, "N",
+        "physical maximum batch size for the draft context (default: same as -ub)",
+        [](common_params & params, int value) {
+            if (value <= 0) {
+                throw std::invalid_argument("spec-draft-ubatch-size must be positive");
+            }
+            params.speculative.draft.n_ubatch = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_UBATCH_SIZE"));
+    add_opt(common_arg(
+        {"--spec-draft-batch-size", "-bd"}, "N",
+        "logical maximum batch size for the draft context (default: same as -b)",
+        [](common_params & params, int value) {
+            if (value <= 0) {
+                throw std::invalid_argument("spec-draft-batch-size must be positive");
+            }
+            params.speculative.draft.n_batch = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_BATCH_SIZE"));
+    add_opt(common_arg(
+        {"--spec-draft-dflash-adaptive"},
+        "adapt the DFlash/DSpark draft length to recent acceptance (default: off)",
+        [](common_params & params) {
+            params.speculative.draft.dflash_adaptive = true;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_DFLASH_ADAPTIVE"));
     add_opt(common_arg(
         {"--spec-draft-type-k", "-ctkd", "--cache-type-k-draft"}, "TYPE",
         string_format(

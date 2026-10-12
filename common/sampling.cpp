@@ -1001,6 +1001,13 @@ bool common_sampler_reasoning_budget_force(struct common_sampler * gsmpl) {
     return common_reasoning_budget_force(gsmpl->rbudget);
 }
 
+int common_sampler_reasoning_budget_state(const struct common_sampler * gsmpl) {
+    if (!gsmpl || !gsmpl->rbudget) {
+        return -1;
+    }
+    return (int) common_reasoning_budget_get_state(gsmpl->rbudget);
+}
+
 // helpers
 
 llama_token_data_array * common_sampler_get_candidates(struct common_sampler * gsmpl, bool do_sort) {

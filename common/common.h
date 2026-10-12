@@ -326,6 +326,27 @@ struct common_params_model {
 };
 
 // draft-model-based speculative decoding parameters
+// reasoning loop guard (reimplemented from Anbeeld/beellama.cpp)
+enum common_reasoning_loop_guard_mode {
+    COMMON_REASONING_LOOP_GUARD_OFF,
+    COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE,
+    COMMON_REASONING_LOOP_GUARD_STOP,
+};
+
+struct common_reasoning_loop_guard_params {
+    common_reasoning_loop_guard_mode mode = COMMON_REASONING_LOOP_GUARD_OFF; // fork default: opt-in
+    int32_t min_reasoning_tokens  = 512;
+    int32_t window_tokens         = 1024;
+    int32_t max_period            = 128;
+    int32_t min_repeated_coverage = 256;
+    int32_t check_interval        = 64;
+    int32_t interventions_max     = 2;
+};
+
+common_reasoning_loop_guard_mode common_reasoning_loop_guard_mode_from_name(const std::string & value);
+const char * common_reasoning_loop_guard_mode_name(common_reasoning_loop_guard_mode value);
+void common_validate_reasoning_loop_guard_params(const common_reasoning_loop_guard_params & params);
+
 struct common_params_speculative_draft {
     int32_t n_max = 3; // maximum number of tokens to draft during speculative decoding
     int32_t n_min = 0; // minimum number of draft tokens to use for speculative decoding
@@ -360,6 +381,9 @@ struct common_params_speculative_draft {
     bool    dflash                = false; // use DFlash speculative decoding
     bool    dflash_defer_injection = true;  // defer encoder KV injection to draft time (set false for higher acceptance on some models)
     int32_t n_ctx                 = 0;     // draft context size
+    int32_t n_batch               = 0;     // draft logical batch size (0 = same as target)            [beellama]
+    int32_t n_ubatch              = 0;     // draft physical batch size (0 = same as target, -ubd)     [beellama]
+    bool    dflash_adaptive       = false; // adapt the DFlash draft length to recent acceptance      [beellama]
 
 };
 
@@ -480,6 +504,7 @@ struct common_params {
     int32_t n_ctx                 =     0; // context size, 0 == context the model was trained with
     int32_t n_batch               =  2048; // logical batch size for prompt processing (must be >=32 to use BLAS)
     int32_t n_ubatch              =   512; // physical batch size for prompt processing (must be >=32 to use BLAS)
+    common_reasoning_loop_guard_params reasoning_loop_guard; // server: detect and break reasoning loops
     int32_t n_keep                =     0; // number of tokens to keep from initial prompt
     int32_t n_chunks              =    -1; // max number of chunks to process (-1 = unlimited)
     int32_t n_parallel            =     1; // number of parallel sequences to decode

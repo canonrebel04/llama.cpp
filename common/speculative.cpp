@@ -1426,14 +1426,36 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 }
             }
 
+            // adaptive draft length (idea from Anbeeld/beellama.cpp): truncate to the per-seq cap
+            if (params.dflash_adaptive && seq_id < (llama_seq_id) dflash_cap.size() &&
+                    (int32_t) result.size() > dflash_cap[seq_id]) {
+                result.resize(dflash_cap[seq_id]);
+            }
+
             if (result.size() < (size_t) params.n_min) {
                 result.clear();
             }
         }
     }
 
-    void accept(llama_seq_id /*seq_id*/, uint16_t /*n_accepted*/, bool /*is_other*/) override {
-        // noop
+    // [seq] adaptive draft cap: grows by one on a fully accepted draft, shrinks toward
+    // the accepted length when less than half of the draft was accepted
+    std::vector<int32_t> dflash_cap;
+
+    void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) override {
+        if (!params.dflash_adaptive || is_other || seq_id < 0) {
+            return;
+        }
+        if ((size_t) seq_id >= dflash_cap.size()) {
+            dflash_cap.resize(seq_id + 1, params.n_max);
+        }
+        int32_t & cap = dflash_cap[seq_id];
+        const int32_t lo = std::max<int32_t>(1, params.n_min);
+        if ((int32_t) n_accepted >= cap) {
+            cap = std::min<int32_t>(params.n_max, cap + 1);
+        } else if (2 * (int32_t) n_accepted < cap) {
+            cap = std::max<int32_t>(lo, (int32_t) n_accepted + 1);
+        }
     }
 };
 
@@ -3060,6 +3082,9 @@ common_params common_base_params_to_speculative(const common_params & params) {
 
     result.cache_type_k  = params_spec.cache_type_k;
     result.cache_type_v  = params_spec.cache_type_v;
+    if (params_spec.n_batch  > 0) { result.n_batch  = params_spec.n_batch;  }
+    if (params_spec.n_ubatch > 0) { result.n_ubatch = params_spec.n_ubatch; }
+    if ((params_spec.n_batch > 0 || params_spec.n_ubatch > 0) && result.n_ubatch > result.n_batch) { result.n_ubatch = result.n_batch; }
     result.n_outputs_max = params.n_parallel;
     result.n_outputs_max_per_seq = 1;
 

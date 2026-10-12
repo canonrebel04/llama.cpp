@@ -16,6 +16,8 @@ add_library(${TARGET} STATIC
     server-decision.cpp
     server-decision.h
     server-context.cpp
+    server-loop-guard.cpp
+    server-loop-guard.h
     server-context.h
     server-stream.cpp
     server-stream.h
