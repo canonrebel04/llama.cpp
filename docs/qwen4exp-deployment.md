@@ -82,3 +82,19 @@ UD-Q2_K_XL (9.8 GB) fits fully VRAM-resident on 12 GB and measured 15.8 tok/s
 decode / 401 tok/s prefill with a draft head at 16k context - 4-13x faster
 prefill than the MoE builds because nothing streams. Choose density for
 interactive loops, sparsity for context and peak knowledge.
+
+## Expert cache must be wired in the graph
+
+`build_moe_ffn` only builds the VRAM hot-pack when the layer pointer is passed
+as `moe_cache`. `qwen35moe`, `deepseek2`, and `laguna` already do this.
+`qwen4exp` did not, so `--moe-expert-cache-size` was a no-op on this arch.
+The graph call now passes `nullptr, &model.layers[il]` (Codacus `5a0a2b60f`).
+`ggml_cuda_mul_mat_id_needs_sync` also skips MMQ/MMF capture when
+`op_params[0] != 0` (hot/cold ids of `-1`, Codacus `08fa762f7`).
+
+OptLlama (`GenerelSchwerz/llama.cpp` `moe-cache`, tip `f3f31a788` as of
+2026-10-11) is ~12k lines ahead of the 2026-09-20 absorb (`16315a8fb`), mostly
+generic hybrid prefill. That tree does not merge cleanly onto this fork
+(hundreds of upstream conflicts) and its own `qwen4exp` graph is still unwired.
+Not merged. The two Codacus lines above are the qwen4exp-specific delta.
+
