@@ -482,6 +482,23 @@ kernel void kernel_flash_attn_ext_vec(
                     }
                 } else {
                     FOR_UNROLL (short cc = 0; cc < C/NE; ++cc) {
+#if TURBO_SPARSE_V
+                        // fork: SPARSE V DEQUANT for TurboQuant V caches - skip the V dequant for KV
+                        // positions whose attention weight is negligible for every query in the
+                        // threadgroup. Restricted to turbo V types so upstream kernels are unchanged.
+                        // Opt-out at library build time with TURBO_SPARSE_V=0.
+                        if (is_same<vd4_t, block_turbo2_0>::value ||
+                            is_same<vd4_t, block_turbo3_0>::value ||
+                            is_same<vd4_t, block_turbo4_0>::value) {
+                            bool skip = true;
+                            FOR_UNROLL (short qq = 0; qq < Q; ++qq) {
+                                skip = skip && (float(ss[qq*C + NE*cc + ty]) < 1e-6f);
+                            }
+                            if (skip) {
+                                continue;
+                            }
+                        }
+#endif
                         device const vd4_t * pv4 = (device const vd4_t *) (v + ((ic + NE*cc + ty)*args.nb21));
 
                         FOR_UNROLL (short ii = 0; ii < DV4/NL; ++ii) {
