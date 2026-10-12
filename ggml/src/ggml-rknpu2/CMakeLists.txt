@@ -1,3 +1,10 @@
+# The RKNPU2 backend uses NEON intrinsics and links the vendor aarch64 librknnrt.so,
+# so it can only be built for aarch64 (natively or with a cross toolchain).
+if (NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    message(FATAL_ERROR "GGML_RKNPU2 requires an aarch64 target (got ${CMAKE_SYSTEM_PROCESSOR}); "
+                        "cross-compile with an aarch64 toolchain, see ggml/src/ggml-rknpu2/README.md")
+endif()
+
 # Finding OpenMP
 find_package(OpenMP REQUIRED)
 
