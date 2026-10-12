@@ -118,6 +118,7 @@ int ggml_metal_pipeline_max_theads_per_threadgroup(struct ggml_metal_pipeline_wi
     X(FA_Q5_0,         fa_q5_0)        \
     X(FA_Q5_1,         fa_q5_1)        \
     X(FA_Q8_0,         fa_q8_0)        \
+    X(FA_TURBO,        fa_turbo)       \
     X(FA_VEC_F16,      fa_vec_f16)     \
     X(FA_VEC_F32,      fa_vec_f32)     \
     X(FA_VEC_Q4_0,     fa_vec_q4_0)    \
@@ -125,9 +126,11 @@ int ggml_metal_pipeline_max_theads_per_threadgroup(struct ggml_metal_pipeline_wi
     X(FA_VEC_Q5_0,     fa_vec_q5_0)    \
     X(FA_VEC_Q5_1,     fa_vec_q5_1)    \
     X(FA_VEC_Q8_0,     fa_vec_q8_0)    \
+    X(FA_VEC_TURBO,    fa_vec_turbo)   \
     X(MUL_MV,          mul_mv)         \
     X(MUL_MV_MMA,      mul_mv_mma)     \
     X(MUL_MM,          mul_mm)         \
+    X(MOE_CACHE,       moe_cache)      \
     X(QUANTIZE,        quantize)       \
     X(SOFTMAX,         softmax)        \
     X(NORM,            norm)           \
@@ -463,6 +466,34 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
 #if GGML_METAL_EMBED_LIBRARY
     [prep setObject:@"1" forKey:@"GGML_METAL_EMBED_LIBRARY"];
 #endif
+
+    // fork: TurboQuant build-time switches (only effective when the kernels are compiled at
+    // runtime, i.e. embedded library or source fallback - a pre-built default.metallib keeps
+    // the defaults baked in at build time)
+    {
+        // 4-mag LUT dequant: default on pre-M5 hardware (no tensor API), force with TURBO_FORCE_4MAG=1
+        const char * force_4mag = getenv("TURBO_FORCE_4MAG");
+        if (!ggml_metal_device_get_props(dev)->has_tensor || (force_4mag && force_4mag[0] == '1')) {
+            [prep setObject:@"1" forKey:@"TURBO_USE_4MAG"];
+            GGML_LOG_INFO("%s: turbo3 using 4-mag LUT%s\n", __func__,
+                force_4mag ? " (forced)" : " (pre-M5 hardware)");
+        }
+
+        // sparse V dequant for turbo V caches: on by default, opt-out with TURBO_SPARSE_V=0
+        const char * sparse_v_env = getenv("TURBO_SPARSE_V");
+        const bool sparse_v_disabled = sparse_v_env && sparse_v_env[0] == '0';
+        if (!sparse_v_disabled) {
+            [prep setObject:@"1" forKey:@"TURBO_SPARSE_V"];
+            GGML_LOG_INFO("%s: turbo sparse V dequant enabled (opt-out: TURBO_SPARSE_V=0)\n", __func__);
+        }
+
+        // profiling: TURBO_PROFILE_MODE=0..4
+        const char * pm = getenv("TURBO_PROFILE_MODE");
+        if (pm && pm[0] >= '0' && pm[0] <= '4') {
+            [prep setObject:[NSString stringWithUTF8String:pm] forKey:@"TURBO_PROFILE_MODE"];
+            GGML_LOG_INFO("%s: TURBO_PROFILE_MODE=%s\n", __func__, pm);
+        }
+    }
 
 #if GGML_METAL_EMBED_LIBRARY
     GGML_LOG_INFO("%s: using embedded metal library\n", __func__);
@@ -1552,36 +1583,6 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
         }
     }
 
-    // fork: the TurboQuant / ConvRot Metal kernels lived in the monolithic
-    // ggml-metal.metal, which upstream split into kernels/*.metal. They have not
-    // been ported to the split layout yet, so report these types/ops as
-    // unsupported and let the scheduler fall back to the CPU instead of failing
-    // to find a pipeline at runtime.
-    if (op->op == GGML_OP_TURBO_WHT) {
-        return false;
-    }
-    {
-        const struct ggml_tensor * ts[4] = { op, op->src[0], op->src[1], op->src[2] };
-        for (int i = 0; i < 4; ++i) {
-            if (ts[i] == NULL) {
-                continue;
-            }
-            switch (ts[i]->type) {
-                case GGML_TYPE_TURBO2_0:
-                case GGML_TYPE_TURBO3_0:
-                case GGML_TYPE_TURBO4_0:
-                case GGML_TYPE_TQ3_1S:
-                case GGML_TYPE_TQ4_1S:
-                case GGML_TYPE_Q8_CR:
-                case GGML_TYPE_Q5_CR:
-                case GGML_TYPE_Q6_CR:
-                    return false;
-                default:
-                    break;
-            }
-        }
-    }
-
     switch (op->op) {
         case GGML_OP_SCALE:
         case GGML_OP_FILL:
@@ -1816,6 +1817,36 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                     return false;
                 }
             }
+            {
+                // fork: turbo K/V kernels (fa_turbo.metal / fa_vec_turbo.metal) are instantiated
+                // only for the head sizes below - both the vec and the non-vec kernels must exist
+                // because the choice between them depends on the batch size at encode time
+                const bool k_is_turbo = (op->src[1]->type == GGML_TYPE_TURBO2_0 ||
+                                         op->src[1]->type == GGML_TYPE_TURBO3_0 ||
+                                         op->src[1]->type == GGML_TYPE_TURBO4_0);
+                const bool v_is_turbo = (op->src[2]->type == GGML_TYPE_TURBO2_0 ||
+                                         op->src[2]->type == GGML_TYPE_TURBO3_0 ||
+                                         op->src[2]->type == GGML_TYPE_TURBO4_0);
+                if (k_is_turbo || v_is_turbo) {
+                    const int64_t dk = op->src[1]->ne[0];
+                    const int64_t dv = op->src[2]->ne[0];
+                    const bool big = (dk == 128 && dv == 128) ||
+                                     (dk == 192 && dv == 192) ||
+                                     (dk == 192 && dv == 128) ||
+                                     (dk == 256 && dv == 256) ||
+                                     (dk == 320 && dv == 256) ||
+                                     (dk == 512 && dv == 512) ||
+                                     (dk == 576 && dv == 512);
+                    // q8_0 x turbo mixes additionally have the small head sizes
+                    const bool small = (dk == 32 && dv == 32) ||
+                                       (dk == 64 && dv == 64) ||
+                                       (dk == 96 && dv == 96);
+                    const bool mixed_q8 = op->src[1]->type == GGML_TYPE_Q8_0 || op->src[2]->type == GGML_TYPE_Q8_0;
+                    if (!(big || (mixed_q8 && small))) {
+                        return false;
+                    }
+                }
+            }
             switch (op->src[1]->type) {
                 case GGML_TYPE_F32:
                 case GGML_TYPE_F16:
@@ -1913,6 +1944,27 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
         case GGML_OP_SOLVE_TRI:
             return has_simdgroup_reduction && op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_MUL_MAT:
+            // fork: ConvRot weights - the activations are rotated into the op's extra buffer and the
+            // matmul runs against the base type (Q8_0 / Q5_0 / Q6_K), see ggml_metal_op_mul_mat
+            if (op->src[0]->type == GGML_TYPE_Q8_CR ||
+                op->src[0]->type == GGML_TYPE_Q5_CR ||
+                op->src[0]->type == GGML_TYPE_Q6_CR) {
+                return has_simdgroup_reduction &&
+                    op->src[1]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32 &&
+                    ggml_is_contiguous(op->src[1]) && ggml_is_contiguous(op) &&
+                    op->src[1]->ne[0] % 256 == 0;
+            }
+            // fork: TurboQuant KV types have no mat-mul kernels
+            if (op->src[0]->type == GGML_TYPE_TURBO2_0 ||
+                op->src[0]->type == GGML_TYPE_TURBO3_0 ||
+                op->src[0]->type == GGML_TYPE_TURBO4_0) {
+                return false;
+            }
+            // fork: TQ weights - the rotate-activation path works on F32 activations in place
+            if (op->src[0]->type == GGML_TYPE_TQ3_1S ||
+                op->src[0]->type == GGML_TYPE_TQ4_1S) {
+                return has_simdgroup_reduction && op->src[1]->type == GGML_TYPE_F32 && op->src[0]->ne[0] % 32 == 0;
+            }
             // the FWHT kernels read an F16 source directly; every other F16 src1 path
             // still goes through ggml_metal_supports_mul_mat_op
             if (op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F16 &&
@@ -1923,6 +1975,18 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                     has_simdgroup_reduction, op, true,
                     ggml_metal_op_mul_mat_use_mm(op, has_simdgroup_mm));
         case GGML_OP_MUL_MAT_ID:
+            if (op->src[0]->type == GGML_TYPE_Q8_CR ||
+                op->src[0]->type == GGML_TYPE_Q5_CR ||
+                op->src[0]->type == GGML_TYPE_Q6_CR ||
+                op->src[0]->type == GGML_TYPE_TURBO2_0 ||
+                op->src[0]->type == GGML_TYPE_TURBO3_0 ||
+                op->src[0]->type == GGML_TYPE_TURBO4_0) {
+                return false;
+            }
+            if (op->src[0]->type == GGML_TYPE_TQ3_1S ||
+                op->src[0]->type == GGML_TYPE_TQ4_1S) {
+                return has_simdgroup_reduction && op->src[1]->type == GGML_TYPE_F32 && op->src[0]->ne[0] % 32 == 0;
+            }
             return ggml_metal_supports_mul_mat_op(
                     has_simdgroup_reduction, op, false,
                     ggml_metal_op_mul_mat_id_use_mm(op, has_simdgroup_mm));
@@ -1947,9 +2011,6 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                            case GGML_TYPE_IQ4_NL:
                            case GGML_TYPE_TQ2_0:
                            case GGML_TYPE_I32:
-                           case GGML_TYPE_TURBO2_0:
-                           case GGML_TYPE_TURBO3_0:
-                           case GGML_TYPE_TURBO4_0:
                                 return true;
                            default:
                                 return false;
@@ -1978,6 +2039,8 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_Q8_0:
                     case GGML_TYPE_TQ2_0:
+                    case GGML_TYPE_TQ3_1S:
+                    case GGML_TYPE_TQ4_1S:
                         switch (op->type) {
                             case GGML_TYPE_F32:
                             case GGML_TYPE_F16:
@@ -1993,7 +2056,14 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
             }
         case GGML_OP_GET_ROWS:
             return op->src[0]->type != GGML_TYPE_NVFP4 &&
-                   op->src[0]->type != GGML_TYPE_TQ1_0;
+                   op->src[0]->type != GGML_TYPE_TQ1_0 &&
+                   // fork: no get_rows kernels for ConvRot / TurboQuant KV types
+                   op->src[0]->type != GGML_TYPE_Q8_CR &&
+                   op->src[0]->type != GGML_TYPE_Q5_CR &&
+                   op->src[0]->type != GGML_TYPE_Q6_CR &&
+                   op->src[0]->type != GGML_TYPE_TURBO2_0 &&
+                   op->src[0]->type != GGML_TYPE_TURBO3_0 &&
+                   op->src[0]->type != GGML_TYPE_TURBO4_0;
         case GGML_OP_SET_ROWS:
             {
                 if (op->src[0]->type == GGML_TYPE_F16) {
@@ -2015,6 +2085,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_TQ2_0:
+                    case GGML_TYPE_TURBO2_0:
+                    case GGML_TYPE_TURBO3_0:
+                    case GGML_TYPE_TURBO4_0:
                         return true;
                     default:
                         return false;

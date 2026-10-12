@@ -370,6 +370,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
             {
                 n_fuse = ggml_metal_op_cumsum(ctx, idx);
             } break;
+        case GGML_OP_LIGHTNING_INDEXER:
+            {
+                n_fuse = ggml_metal_op_lightning_indexer(ctx, idx);
+            } break;
         case GGML_OP_DSV4_HC_COMB:
         case GGML_OP_DSV4_HC_PRE:
         case GGML_OP_DSV4_HC_POST:
@@ -2583,8 +2587,9 @@ static int ggml_metal_op_mul_mat_mma(ggml_metal_op_t ctx, int idx) {
 }
 
 // the generic mat-vec kernel, or its 2-row Q4_0 variant if nc
-static int ggml_metal_op_mul_mat_mv(ggml_metal_op_t ctx, int idx) {
-    ggml_tensor * op = ctx->node(idx);
+// op_override: the fork's ConvRot path substitutes a temporary op (base weight type + rotated src1)
+static int ggml_metal_op_mul_mat_mv(ggml_metal_op_t ctx, int idx, const ggml_tensor * op_override = nullptr) {
+    const ggml_tensor * op = op_override ? op_override : ctx->node(idx);
 
     ggml_metal_library_t lib = ctx->lib;
     ggml_metal_encoder_t enc = ctx->enc;
@@ -2639,7 +2644,9 @@ static int ggml_metal_op_mul_mat_mv(ggml_metal_op_t ctx, int idx) {
     if (op->src[0]->type == GGML_TYPE_F32 ||
         op->src[0]->type == GGML_TYPE_F16 ||
         op->src[0]->type == GGML_TYPE_BF16 ||
-        op->src[0]->type == GGML_TYPE_Q8_0) {
+        op->src[0]->type == GGML_TYPE_Q8_0 ||
+        op->src[0]->type == GGML_TYPE_TQ3_1S ||
+        op->src[0]->type == GGML_TYPE_TQ4_1S) {
         ggml_metal_encoder_dispatch_threadgroups(enc, ((ne01 + nr0 - 1)/(nr0)), ((ne11 + nr1 - 1)/nr1), ne12*ne13, 32, nsg, 1);
     } else {
         ggml_metal_encoder_dispatch_threadgroups(enc, ((ne01 + nr0*nsg - 1)/(nr0*nsg)), ((ne11 + nr1 - 1)/nr1), ne12*ne13, 32, nsg, 1);
@@ -2660,7 +2667,50 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
         return ggml_metal_op_fwht(ctx, idx);
     }
 
-    if (props_dev->has_simdgroup_mm && ggml_metal_op_mul_mat_use_mma(op)) {
+    // fork: ConvRot (Q8_CR / Q5_CR / Q6_CR) - rotate src1 into the extra buffer allocated after the
+    // op output (see ggml_backend_metal_buffer_type_get_alloc_size), then run the regular mat-mul
+    // against the base weight type using a temporary op
+    ggml_tensor op_cr;
+    ggml_tensor src0_base;
+    ggml_tensor src1_rot;
+
+    const bool is_cr = op->src[0]->type == GGML_TYPE_Q8_CR ||
+                       op->src[0]->type == GGML_TYPE_Q5_CR ||
+                       op->src[0]->type == GGML_TYPE_Q6_CR;
+    if (is_cr) {
+        GGML_ASSERT(op->src[1]->type == GGML_TYPE_F32);
+        GGML_ASSERT(op->type == GGML_TYPE_F32);
+        GGML_ASSERT(ggml_is_contiguous(op->src[1]));
+        GGML_ASSERT(op->src[1]->ne[0] % 256 == 0);
+
+        const int64_t n_groups = ggml_nelements(op->src[1]) / 256;
+        ggml_metal_buffer_id bid_rot = ggml_metal_get_buffer_id(op);
+        bid_rot.offs += ggml_nbytes(op);
+
+        auto pipeline = ggml_metal_library_get_pipeline_convrot(lib);
+        ggml_metal_encoder_set_pipeline(enc, pipeline);
+        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[1]), 0);
+        ggml_metal_encoder_set_buffer(enc, bid_rot, 1);
+        ggml_metal_encoder_dispatch_threadgroups(enc, n_groups, 1, 1, 64, 1, 1);
+        ggml_metal_op_concurrency_reset(ctx);
+
+        src0_base = *op->src[0];
+        src0_base.type = op->src[0]->type == GGML_TYPE_Q8_CR ? GGML_TYPE_Q8_0 :
+                         op->src[0]->type == GGML_TYPE_Q5_CR ? GGML_TYPE_Q5_0 : GGML_TYPE_Q6_K;
+        src0_base.nb[0] = ggml_type_size(src0_base.type);
+
+        src1_rot = *op->src[1];
+        src1_rot.buffer = op->buffer;
+        src1_rot.data = (char *) op->data + ggml_nbytes(op);
+
+        op_cr = *op;
+        op_cr.src[0] = &src0_base;
+        op_cr.src[1] = &src1_rot;
+        op = &op_cr;
+    }
+
+    // the MMA path re-reads ctx->node(idx) and may fuse a following ADD - not for the substituted ConvRot op
+    if (!is_cr && props_dev->has_simdgroup_mm && ggml_metal_op_mul_mat_use_mma(op)) {
         return ggml_metal_op_mul_mat_mma(ctx, idx);
     }
 
@@ -2793,7 +2843,31 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
         //    default: break;
         //}
 
-        auto pipeline = ggml_metal_library_get_pipeline_mul_mm(lib, op);
+        // fork: TQ weights - pre-rotate the activations in place, run the no-RHT dequant mat-mul,
+        // then un-rotate. TQ_NO_ROTATE=1 falls back to the standard mul_mm kernels (inverse-RHT
+        // dequant, matches CPU) - workaround for shapes where rotate-act produces NaN.
+        static const bool tq_no_rotate = getenv("TQ_NO_ROTATE") != nullptr;
+
+        const bool is_tq_weight = op->src[0]->type == GGML_TYPE_TQ3_1S || op->src[0]->type == GGML_TYPE_TQ4_1S;
+        const bool tq_rotate    = is_tq_weight && ne00 % 32 == 0 && !tq_no_rotate;
+
+        int64_t n_act_val = 0;
+        if (tq_rotate) {
+            GGML_ASSERT(op->src[1]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[1]));
+            n_act_val = (int64_t) ne10*ne11*ne12*ne13;
+
+            auto pipeline_rot = ggml_metal_library_get_pipeline_tq3_rotate_act(lib, false);
+            ggml_metal_encoder_set_pipeline(enc, pipeline_rot);
+            ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), 0);
+            ggml_metal_encoder_set_bytes   (enc, &n_act_val, sizeof(n_act_val), 1);
+            ggml_metal_encoder_dispatch_threadgroups(enc, (int)(n_act_val / 32), 1, 1, 32, 1, 1);
+
+            ggml_metal_op_concurrency_reset(ctx);
+        }
+
+        auto pipeline = tq_rotate
+            ? ggml_metal_library_get_pipeline_mul_mm_tq_rotated(lib, op)
+            : ggml_metal_library_get_pipeline_mul_mm(lib, op);
 
         ggml_metal_kargs_mul_mm args = {
             /*.ne00 =*/ ne00,
@@ -2827,8 +2901,21 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
         const int nsg = pipeline.nsg;
 
         ggml_metal_encoder_dispatch_threadgroups(enc, ((ne11 + nr1 - 1) / nr1), ((ne01 + nr0 - 1) / nr0), ne12 * ne13, 32, nsg, 1);
+
+        if (tq_rotate) {
+            ggml_metal_op_concurrency_reset(ctx);
+
+            auto pipeline_unrot = ggml_metal_library_get_pipeline_tq3_rotate_act(lib, true);
+            ggml_metal_encoder_set_pipeline(enc, pipeline_unrot);
+            ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), 0);
+            ggml_metal_encoder_set_bytes   (enc, &n_act_val, sizeof(n_act_val), 1);
+            ggml_metal_encoder_dispatch_threadgroups(enc, (int)(n_act_val / 32), 1, 1, 32, 1, 1);
+
+            // ensure the un-rotate completes before any subsequent op reads src1
+            ggml_metal_op_concurrency_reset(ctx);
+        }
     } else {
-        return ggml_metal_op_mul_mat_mv(ctx, idx);
+        return ggml_metal_op_mul_mat_mv(ctx, idx, op);
     }
 
     return 1;
@@ -2895,6 +2982,28 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
     const uint32_t r3 = 1;
 
     if (ggml_metal_op_mul_mat_id_use_mm(op, props_dev->has_simdgroup_mm)) {
+        // fork: TQ weights (MoE) - pre-rotate the activations for the no-RHT dequant kernels
+        // (before the amax pass, so the src1 rescale factors match the rotated activations)
+        static const bool tq_no_rotate = getenv("TQ_NO_ROTATE") != nullptr;
+
+        const bool tq_rotate = (op->src[0]->type == GGML_TYPE_TQ3_1S || op->src[0]->type == GGML_TYPE_TQ4_1S) &&
+                               ne00 % 32 == 0 && !tq_no_rotate;
+
+        int64_t n_act_val = 0;
+        if (tq_rotate) {
+            GGML_ASSERT(op->src[1]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[1]));
+            n_act_val = (int64_t) ne10*ne11*ne12*ne13;
+
+            auto pipeline_rot = ggml_metal_library_get_pipeline_tq3_rotate_act(lib, false);
+            ggml_metal_encoder_set_pipeline(enc, pipeline_rot);
+            ggml_metal_encoder_set_buffer  (enc, bid_src1, 0);
+            ggml_metal_encoder_set_bytes   (enc, &n_act_val, sizeof(n_act_val), 1);
+            ggml_metal_encoder_dispatch_threadgroups(enc, (int)(n_act_val / 32), 1, 1, 32, 1, 1);
+
+            ggml_metal_op_concurrency_reset(ctx);
+        }
+
+
         // some Metal matrix data types require aligned pointers
         // ref: https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf (Table 2.5)
         //switch (op->src[0]->type) {
@@ -2990,7 +3099,9 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         }
 
         {
-            auto pipeline = ggml_metal_library_get_pipeline_mul_mm_id(lib, op);
+            auto pipeline = tq_rotate
+                ? ggml_metal_library_get_pipeline_mul_mm_id_tq_rotated(lib, op)
+                : ggml_metal_library_get_pipeline_mul_mm_id(lib, op);
 
             ggml_metal_kargs_mul_mm_id args = {
                 /*.ne00  =*/ ne00,
@@ -3025,6 +3136,19 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
             ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
 
             ggml_metal_encoder_dispatch_threadgroups(enc, (ne21 + 31)/32, (ne01 + 63)/64, ne02, 128, 1, 1);
+        }
+
+        if (tq_rotate) {
+            ggml_metal_op_concurrency_reset(ctx);
+
+            auto pipeline_unrot = ggml_metal_library_get_pipeline_tq3_rotate_act(lib, true);
+            ggml_metal_encoder_set_pipeline(enc, pipeline_unrot);
+            ggml_metal_encoder_set_buffer  (enc, bid_src1, 0);
+            ggml_metal_encoder_set_bytes   (enc, &n_act_val, sizeof(n_act_val), 1);
+            ggml_metal_encoder_dispatch_threadgroups(enc, (int)(n_act_val / 32), 1, 1, 32, 1, 1);
+
+            // ensure the un-rotate completes before any subsequent op reads src1
+            ggml_metal_op_concurrency_reset(ctx);
         }
     } else {
         auto pipeline = ggml_metal_library_get_pipeline_mul_mv_id(lib, op);
@@ -3077,7 +3201,9 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         if (op->src[0]->type == GGML_TYPE_F32 ||
             op->src[0]->type == GGML_TYPE_F16 ||
             op->src[0]->type == GGML_TYPE_BF16 ||
-            op->src[0]->type == GGML_TYPE_Q8_0) {
+            op->src[0]->type == GGML_TYPE_Q8_0 ||
+            op->src[0]->type == GGML_TYPE_TQ3_1S ||
+            op->src[0]->type == GGML_TYPE_TQ4_1S) {
             ggml_metal_encoder_dispatch_threadgroups(enc, (ne01 + nr0 - 1)/(nr0), (_ne1 + nr1 - 1)/nr1, ne123, 32, nsg, 1);
         } else {
             ggml_metal_encoder_dispatch_threadgroups(enc, (ne01 + nr0*nsg - 1)/(nr0*nsg), (_ne1 + nr1 - 1)/nr1, ne123, 32, nsg, 1);
@@ -3205,6 +3331,11 @@ static bool ggml_metal_op_flash_attn_ext_use_kv_f16(const ggml_tensor * op) {
         return false;
     }
 
+    // asymmetric K/V (fork turbo/q8_0 mixes) use dedicated kernels that read K and V directly
+    if (op->src[1]->type != op->src[2]->type) {
+        return false;
+    }
+
     switch (op->src[1]->type) {
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
@@ -3299,6 +3430,11 @@ static int ggml_metal_op_flash_attn_ext_n_kv_max_sparse(const ggml_tensor * op) 
                           (dk == 576 && dv == 512);
 
     if (!dk_dv_ok) {
+        return 0;
+    }
+
+    // fork: keep the asymmetric K/V (turbo) kernels on the dense path
+    if (op->src[1]->type != op->src[2]->type) {
         return 0;
     }
 
@@ -4136,7 +4272,13 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
     } else {
         // half4x4 kernel
         // sparse: the index lists are per query row, so a threadgroup can share KV with Q == 1 only
-        auto cfg = use_sparse
+        // fork: turbo / asymmetric K/V kernels (fa_vec_turbo.metal) are instantiated for the baseline config only
+        const bool kv_turbo_or_asym =
+            op->src[1]->type != op->src[2]->type ||
+            op->src[1]->type == GGML_TYPE_TURBO2_0 ||
+            op->src[1]->type == GGML_TYPE_TURBO3_0 ||
+            op->src[1]->type == GGML_TYPE_TURBO4_0;
+        auto cfg = (use_sparse || kv_turbo_or_asym)
                 ? ggml_metal_tuning::fa_vec_baseline_cfg((int) ne00, (int) ne20)
                 : ggml_metal_tuning::fa_vec_pick(
                           props_dev->gpu_family,

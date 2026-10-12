@@ -938,7 +938,8 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_mma(ggml_
     return res;
 }
 
-ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_metal_library_t lib, const ggml_tensor * op) {
+// infix: "" for the regular kernels, "_rotated" for the fork's TQ3_1S/TQ4_1S no-RHT dequant variants
+static ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_impl(ggml_metal_library_t lib, const ggml_tensor * op, const char * infix) {
     char base[256];
     char name[256];
 
@@ -962,7 +963,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
     const int16_t r2   = (int16_t) (ne12 / op->src[0]->ne[2]);
     const int16_t r3   = (int16_t) (ne13 / op->src[0]->ne[3]);
 
-    snprintf(base, 256, "kernel_mul_mm_%s_%s", ggml_type_name(tsrc0), ggml_type_name(tsrc1));
+    snprintf(base, 256, "kernel_mul_mm_%s%s_%s", ggml_type_name(tsrc0), infix, ggml_type_name(tsrc1));
     snprintf(name, 256, "%s_bci=%d_bco=%d_ne12=%d_ne13=%d_r2=%d_r3=%d",
              base, bc_inp, bc_out, ne12, ne13, r2, r3);
 
@@ -998,6 +999,16 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
     res.nsg = N_MM_SIMD_GROUP_X * N_MM_SIMD_GROUP_Y;
 
     return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_metal_library_t lib, const ggml_tensor * op) {
+    return ggml_metal_library_get_pipeline_mul_mm_impl(lib, op, "");
+}
+
+// TQ3_1S / TQ4_1S rotated variant: uses dequantize_*_rotated (no inverse RHT) - same FCs/tiling as mul_mm
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_tq_rotated(ggml_metal_library_t lib, const ggml_tensor * op) {
+    GGML_ASSERT(op->src[0]->type == GGML_TYPE_TQ3_1S || op->src[0]->type == GGML_TYPE_TQ4_1S);
+    return ggml_metal_library_get_pipeline_mul_mm_impl(lib, op, "_rotated");
 }
 
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_metal_library_t lib, const ggml_tensor * op) {
@@ -1254,77 +1265,6 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
     return res;
 }
 
-// TQ3_1S / TQ4_1S rotated variant: uses dequantize_*_rotated (no inverse RHT)
-ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_tq_rotated(ggml_metal_library_t lib, const ggml_tensor * op) {
-    char base[256];
-    char name[256];
-
-    const ggml_type tsrc0 = op->src[0]->type;
-    const ggml_type tsrc1 = op->src[1]->type;
-
-    const bool bc_inp = op->src[0]->ne[0] % 32 != 0;
-    const bool bc_out = op->ne[0] % 64 != 0 || op->ne[1] % 32 != 0;
-
-    GGML_ASSERT(op->src[1]->ne[2] <= INT16_MAX && op->src[1]->ne[3] <= INT16_MAX);
-    const int16_t ne12 = (int16_t) op->src[1]->ne[2];
-    const int16_t ne13 = (int16_t) op->src[1]->ne[3];
-    const int16_t r2   = (int16_t) (ne12 / op->src[0]->ne[2]);
-    const int16_t r3   = (int16_t) (ne13 / op->src[0]->ne[3]);
-
-    snprintf(base, 256, "kernel_mul_mm_%s_rotated_%s", ggml_type_name(tsrc0), ggml_type_name(tsrc1));
-    snprintf(name, 256, "%s_bci=%d_bco=%d_ne12=%d_ne13=%d_r2=%d_r3=%d",
-             base, bc_inp, bc_out, ne12, ne13, r2, r3);
-
-    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
-    if (!res.pipeline) {
-        ggml_metal_cv_t cv = ggml_metal_cv_init();
-
-        ggml_metal_cv_set_bool(cv, bc_inp, FC_MUL_MM + 0);
-        ggml_metal_cv_set_bool(cv, bc_out, FC_MUL_MM + 1);
-        ggml_metal_cv_set_int16(cv, ne12,  FC_MUL_MM + 2);
-        ggml_metal_cv_set_int16(cv, ne13,  FC_MUL_MM + 3);
-        ggml_metal_cv_set_int16(cv, r2,    FC_MUL_MM + 4);
-        ggml_metal_cv_set_int16(cv, r3,    FC_MUL_MM + 5);
-
-        res = ggml_metal_library_compile_pipeline(lib, base, name, cv);
-
-        ggml_metal_cv_free(cv);
-    }
-
-    res.smem = bc_out ? 8192 : 4096 + 2048;
-
-    return res;
-}
-
-// TQ3_1S / TQ4_1S rotated MUL_MAT_ID variant
-ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_tq_rotated(ggml_metal_library_t lib, const ggml_tensor * op) {
-    char base[256];
-    char name[256];
-
-    const ggml_type tsrc0 = op->src[0]->type;
-    const ggml_type tsrc1 = op->src[1]->type;
-
-    const bool bc_inp = op->src[0]->ne[0] % 32 != 0;
-
-    snprintf(base, 256, "kernel_mul_mm_id_%s_rotated_%s", ggml_type_name(tsrc0), ggml_type_name(tsrc1));
-    snprintf(name, 256, "%s_bci=%d", base, bc_inp);
-
-    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
-    if (!res.pipeline) {
-        ggml_metal_cv_t cv = ggml_metal_cv_init();
-
-        ggml_metal_cv_set_bool(cv, bc_inp, FC_MUL_MM + 0);
-
-        res = ggml_metal_library_compile_pipeline(lib, base, name, cv);
-
-        ggml_metal_cv_free(cv);
-    }
-
-    res.smem = 8192;
-
-    return res;
-}
-
 // TQ3_1S / TQ4_1S activation pre-rotation pipeline (shared by both)
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_tq3_rotate_act(ggml_metal_library_t lib, bool inverse) {
     char name[256];
@@ -1410,7 +1350,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_map0(g
     return res;
 }
 
-ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id(ggml_metal_library_t lib, const ggml_tensor * op) {
+static ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_impl(ggml_metal_library_t lib, const ggml_tensor * op, const char * infix) {
     char base[256];
     char name[256];
 
@@ -1422,7 +1362,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id(ggml_m
     // src1 prec [TAG_GGML_PREC]
     const bool amax = ggml_get_op_params_i32(op, 3) == GGML_PREC_F32;
 
-    snprintf(base, 256, "kernel_mul_mm_id_%s_%s", ggml_type_name(tsrc0), ggml_type_name(tsrc1));
+    snprintf(base, 256, "kernel_mul_mm_id_%s%s_%s", ggml_type_name(tsrc0), infix, ggml_type_name(tsrc1));
     snprintf(name, 256, "%s_bci=%d_amax=%d", base, bc_inp, amax);
 
     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
@@ -1440,6 +1380,16 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id(ggml_m
     res.smem = 8192;
 
     return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id(ggml_metal_library_t lib, const ggml_tensor * op) {
+    return ggml_metal_library_get_pipeline_mul_mm_id_impl(lib, op, "");
+}
+
+// TQ3_1S / TQ4_1S rotated MUL_MAT_ID variant - same FCs as mul_mm_id
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_tq_rotated(ggml_metal_library_t lib, const ggml_tensor * op) {
+    GGML_ASSERT(op->src[0]->type == GGML_TYPE_TQ3_1S || op->src[0]->type == GGML_TYPE_TQ4_1S);
+    return ggml_metal_library_get_pipeline_mul_mm_id_impl(lib, op, "_rotated");
 }
 
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id(ggml_metal_library_t lib, const ggml_tensor * op) {
@@ -2050,14 +2000,24 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext(
     // do bounds checks for the mask?
     const bool bc_mask = op->src[3] && (op->src[3]->ne[1] % 8 != 0);
 
-    // Asymmetric K/V: always encode both K and V types in the pipeline name.
-    // Symmetric case: ktype == vtype, so the name just has the type twice.
-    // This avoids ambiguity if a type name contains underscores (e.g. q4_0).
-    snprintf(base, 256, "kernel_%s_k%s_v%s_dk%d_dv%d",
-            "flash_attn_ext",
-            type,
-            dk,
-            dv);
+    // Symmetric K/V (and the f16 conversion path) use upstream naming:
+    //   kernel_flash_attn_ext_<type>_dk<dk>_dv<dv>
+    // Asymmetric K/V (fork: q8_0 x turbo*, turbo* x turbo*) encode both types:
+    //   kernel_flash_attn_ext_k<ktype>_v<vtype>_dk<dk>_dv<dv>
+    if (!use_kv_f16 && op->src[1]->type != op->src[2]->type) {
+        snprintf(base, 256, "kernel_%s_k%s_v%s_dk%d_dv%d",
+                "flash_attn_ext",
+                ggml_type_name(op->src[1]->type),
+                ggml_type_name(op->src[2]->type),
+                dk,
+                dv);
+    } else {
+        snprintf(base, 256, "kernel_%s_%s_dk%d_dv%d",
+                "flash_attn_ext",
+                type,
+                dk,
+                dv);
+    }
 
 
     snprintf(name, 256, "%s_mask=%d_sinks=%d_bias=%d_scap=%d_kvpad=%d_bcm=%d_ns10=%d_ns20=%d_nsg=%d",
@@ -2147,12 +2107,23 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_v
         snprintf(qne_suffix, sizeof(qne_suffix), "_q%d_ne%d", nqpsg, ne);
     }
 
-    snprintf(base, 256, "kernel_%s_%s_dk%d_dv%d%s",
-            "flash_attn_ext_vec",
-            type,
-            dk,
-            dv,
-            qne_suffix);
+    if (!use_kv_f16 && op->src[1]->type != op->src[2]->type) {
+        // asymmetric K/V (fork turbo kernels): only baseline Q/NE are instantiated
+        snprintf(base, 256, "kernel_%s_k%s_v%s_dk%d_dv%d%s",
+                "flash_attn_ext_vec",
+                ggml_type_name(op->src[1]->type),
+                ggml_type_name(op->src[2]->type),
+                dk,
+                dv,
+                qne_suffix);
+    } else {
+        snprintf(base, 256, "kernel_%s_%s_dk%d_dv%d%s",
+                "flash_attn_ext_vec",
+                type,
+                dk,
+                dv,
+                qne_suffix);
+    }
 
     snprintf(name, 256, "%s_mask=%d_sink=%d_bias=%d_scap=%d_kvpad=%d_sparse=%d_ns10=%d_ns20=%d_nsg=%d_nwg=%d",
             base,
