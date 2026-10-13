@@ -215,3 +215,89 @@ template<typename src_t, typename dst_t>
 static __device__ void cpy_1_scalar(const char * cxi, char * cdsti) {
     *(dst_t *) cdsti = ggml_cuda_cast<dst_t>(*(const src_t *) cxi);
 }
+
+// beellama KV-cache types (Anbeeld/beellama.cpp): block quantizers matching
+// quantize_row_q{6_0,6_1,3_0,3_1,2_0s,2_1}_ref in ggml-quants.c (used by SET_ROWS).
+static __device__ void quantize_f32_q6_0_block(const float * __restrict__ x, block_q6_0 * __restrict__ y) {
+    float amax = 0.0f, max = 0.0f;
+    for (int j = 0; j < 32; ++j) { const float v = x[j]; if (amax < fabsf(v)) { amax = fabsf(v); max = v; } }
+    float d = max / -32;
+    const float id = d ? 1.0f/d : 0.0f;
+    float sumqx = 0.0f, sumq2 = 0.0f;
+    for (int j = 0; j < 8; ++j) y->qh[j] = 0;
+    for (int j = 0; j < 16; ++j) {
+        const uint8_t xi0 = min(63, (int)(int8_t)(x[j]*id + 32.5f));
+        const uint8_t xi1 = min(63, (int)(int8_t)(x[j+16]*id + 32.5f));
+        y->qs[j] = (xi0 & 0x0F) | ((xi1 & 0x0F) << 4);
+        y->qh[j % 8] |= ((xi0 >> 4) | ((xi1 >> 4) << 2)) << (4*(j / 8));
+        const float v0 = (float)((int) xi0 - 32), v1 = (float)((int) xi1 - 32);
+        const float w0 = x[j]*x[j], w1 = x[j+16]*x[j+16];
+        sumqx += w0*v0*x[j] + w1*v1*x[j+16];
+        sumq2 += w0*v0*v0 + w1*v1*v1;
+    }
+    if (sumq2 > 0) d = sumqx / sumq2;
+    y->d = d;
+}
+template <int bits, typename block_t>
+static __device__ void bee_minmax(const float * x, block_t * y, float & mn, float & id) {
+    mn = x[0]; float mx = x[0];
+    for (int j = 1; j < 32; ++j) { mn = fminf(mn, x[j]); mx = fmaxf(mx, x[j]); }
+    const float d = (mx - mn) / ((1 << bits) - 1);
+    id = d ? 1.0f/d : 0.0f;
+    y->dm = make_half2(d, mn);
+}
+static __device__ void quantize_f32_q6_1_block(const float * __restrict__ x, block_q6_1 * __restrict__ y) {
+    float mn, id; bee_minmax<6>(x, y, mn, id);
+    for (int j = 0; j < 8; ++j) y->qh[j] = 0;
+    for (int j = 0; j < 16; ++j) {
+        const uint8_t xi0 = min(63, (int)(int8_t)((x[j] - mn)*id + 0.5f));
+        const uint8_t xi1 = min(63, (int)(int8_t)((x[j+16] - mn)*id + 0.5f));
+        y->qs[j] = (xi0 & 0x0F) | ((xi1 & 0x0F) << 4);
+        y->qh[j % 8] |= ((xi0 >> 4) | ((xi1 >> 4) << 2)) << (4*(j / 8));
+    }
+}
+static __device__ void bee_store_q3(const uint8_t * q, uint8_t * qs, uint8_t * qhb) {
+    uint32_t qh = 0;
+    for (int j = 0; j < 8; ++j) qs[j] = 0;
+    for (int j = 0; j < 32; ++j) {
+        qs[j % 8] |= (q[j] & 0x03) << (2*(j / 8));
+        qh |= ((q[j] & 0x04u) >> 2) << j;
+    }
+    for (int k = 0; k < 4; ++k) qhb[k] = (qh >> (8*k)) & 0xFF;
+}
+static __device__ void quantize_f32_q3_0_block(const float * __restrict__ x, block_q3_0 * __restrict__ y) {
+    float amax = 0.0f, max = 0.0f;
+    for (int j = 0; j < 32; ++j) { const float v = x[j]; if (amax < fabsf(v)) { amax = fabsf(v); max = v; } }
+    const float d = max / -4;
+    const float id = d ? 1.0f/d : 0.0f;
+    y->d = d;
+    uint8_t q[32];
+    for (int j = 0; j < 32; ++j) q[j] = min(7, (int)(int8_t)(x[j]*id + 4.5f));
+    bee_store_q3(q, y->qs, y->qh);
+}
+static __device__ void quantize_f32_q3_1_block(const float * __restrict__ x, block_q3_1 * __restrict__ y) {
+    float mn, id; bee_minmax<3>(x, y, mn, id);
+    uint8_t q[32];
+    for (int j = 0; j < 32; ++j) q[j] = min(7, (int)(int8_t)((x[j] - mn)*id + 0.5f));
+    bee_store_q3(q, y->qs, y->qh);
+}
+static __device__ void quantize_f32_q2_0s_block(const float * __restrict__ x, block_q2_0s * __restrict__ y) {
+    float amax = 0.0f, max = 0.0f;
+    for (int j = 0; j < 32; ++j) { const float v = x[j]; if (amax < fabsf(v)) { amax = fabsf(v); max = v; } }
+    const float d = max / -2;
+    const float id = d ? 1.0f/d : 0.0f;
+    y->d = d;
+    for (int j = 0; j < 8; ++j) y->qs[j] = 0;
+    for (int j = 0; j < 32; ++j) {
+        const uint8_t xi = min(3, (int)(int8_t)(x[j]*id + 2.5f));
+        y->qs[j % 8] |= (xi & 0x03) << (2*(j / 8));
+    }
+}
+static __device__ void quantize_f32_q2_1_block(const float * __restrict__ x, block_q2_1 * __restrict__ y) {
+    float mn, id; bee_minmax<2>(x, y, mn, id);
+    for (int j = 0; j < 8; ++j) y->qs[j] = 0;
+    for (int j = 0; j < 32; ++j) {
+        const uint8_t xi = min(3, (int)(int8_t)((x[j] - mn)*id + 0.5f));
+        y->qs[j % 8] |= (xi & 0x03) << (2*(j / 8));
+    }
+}

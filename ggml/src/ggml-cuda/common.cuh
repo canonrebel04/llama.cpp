@@ -995,6 +995,47 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q2_0> {
     static constexpr int bs = sizeof(block_q2_0);
 };
 
+// ik_llama.cpp IQ_K types: mmvq treats a QK_K super-block as 8 chunks of 32 (one q8_1 block each)
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ2_K> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_K/32;
+    static constexpr int bs = sizeof(block_iq2_k);
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ3_K> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_K/32;
+    static constexpr int bs = sizeof(block_iq3_k);
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ4_K> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_K/32;
+    static constexpr int bs = sizeof(block_iq4_k);
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ5_K> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_K/32;
+    static constexpr int bs = sizeof(block_iq5_k);
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ6_K> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_K/32;
+    static constexpr int bs = sizeof(block_iq6_k);
+};
+
 // PQ2_0 / PTQ1_0 (from PrismML llama.cpp fork)
 template<>
 template<>

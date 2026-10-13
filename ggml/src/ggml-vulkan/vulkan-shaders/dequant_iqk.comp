@@ -1,0 +1,106 @@
+#version 450
+
+// Dequantize the ik_llama.cpp IQ_K types (IQ2_K .. IQ6_K) to D_TYPE.
+// Ported from ik_llama.cpp (Iwan Kawrakow, MIT); mirrors dequantize_row_iqN_k in
+// ggml/src/ggml-iqk-quants.cpp. Select the type with IQK_BITS = 2..6.
+// Used by the generic dequant -> f16 matmul path (no dedicated mat-vec shaders yet).
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_8bit_storage : require
+
+layout (push_constant) uniform parameter
+{
+    uint M;
+    uint K;
+    uint stride_a;
+    uint stride_b;
+    uint nel;
+} p;
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#if IQK_BITS == 2
+struct block_iqk { float16_t d; uint16_t extra; uint8_t scales[8]; uint8_t qs[64]; };
+const int vals[8] = { -31, -13, 1, 17, -26, -8, 6, 22 };
+#elif IQK_BITS == 3
+struct block_iqk { float16_t d; uint16_t extra; uint16_t scales_h; uint8_t scales_l[8]; uint8_t qs[64]; uint8_t qh[32]; };
+const int vals[16] = { -63, -40, -23, -10, 1, 13, 28, 47, -59, -36, -19, -6, 5, 17, 32, 51 };
+#elif IQK_BITS == 4
+struct block_iqk { float16_t d; uint16_t extra; uint8_t scales_h[4]; uint8_t scales_l[8]; uint8_t qs[128]; };
+const int vals[32] = { -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+                       -123, -100, -79, -61, -45, -31, -18,  -6, 5, 17, 29, 42, 57, 73, 93, 117 };
+#elif IQK_BITS == 5
+struct block_iqk { float16_t d; uint16_t extra; uint8_t scales_h[4]; uint8_t scales_l[8]; uint8_t qs[128]; uint8_t qh[32]; };
+const int vals[64] = {
+    -126, -114, -103, -92, -83, -74, -65, -57, -50, -43, -36, -30, -24, -18, -12, -6, -1, 5, 11, 17, 23, 29, 36, 43, 51, 59, 68, 77, 87, 97, 109, 121,
+    -124, -112, -101, -90, -81, -72, -63, -55, -48, -41, -34, -28, -22, -16, -10, -4,  1, 7, 13, 19, 25, 31, 38, 45, 53, 61, 70, 79, 89, 99, 111, 123 };
+#elif IQK_BITS == 6
+struct block_iqk { float16_t d; uint16_t extra; int8_t scales[16]; uint8_t qs[128]; uint8_t qh[64]; };
+#endif
+
+layout (binding = 0) readonly buffer A {block_iqk data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
+
+float elem(uint ib, uint j) {
+    const float d = float(data_a[ib].d);
+    const uint extra = uint(data_a[ib].extra);
+#if IQK_BITS == 2
+    const uint ib32 = j / 32, w = j % 32, half_ = w / 16;
+    const float dl = d * (int((uint(data_a[ib].scales[ib32]) >> (4*half_)) & 0xF) - 8);
+    const uint off = 4 * ((extra >> (2*ib32 + half_)) & 1);
+    const uint q = uint(data_a[ib].qs[(ib32/4)*32 + half_*16 + w%16]);
+    return dl * vals[off + ((q >> (2*(ib32%4))) & 3)];
+#elif IQK_BITS == 3
+    const uint ib32 = j / 32, w = j % 32, half_ = w / 16;
+    const uint sgn = (uint(data_a[ib].scales_h) >> (2*ib32 + half_)) & 1;
+    const float dl = d * float(2*int((uint(data_a[ib].scales_l[ib32]) >> (4*half_)) & 0xF) + 1) * (sgn != 0 ? -1.0 : 1.0);
+    const uint off = 8 * ((extra >> (2*ib32 + half_)) & 1);
+    const uint iw = half_*16 + w%16;
+    const uint ql = uint(data_a[ib].qs[(ib32/4)*32 + iw]);
+    const uint qh = uint(data_a[ib].qh[iw]);
+    return dl * vals[off + (((ql >> (2*(ib32%4))) & 3) | (((qh >> (ib32%8)) & 1) << 2))];
+#elif IQK_BITS == 4
+    const uint ib32 = j / 32, w = j % 32, half_ = w / 16;
+    const uint sh = uint(data_a[ib].scales_h[ib32/2]) >> (4*(ib32%2));
+    const int ls = int(((uint(data_a[ib].scales_l[ib32]) >> (4*half_)) & 0xF) | (((sh >> (2*half_)) & 3) << 4)) - 32;
+    const uint off = 16 * ((extra >> (2*ib32 + half_)) & 1);
+    const uint q = uint(data_a[ib].qs[ib32*16 + w%16]);
+    return d * ls * vals[off + ((q >> (4*half_)) & 0xF)];
+#elif IQK_BITS == 5
+    const uint ib64 = j / 64, w = j % 64, part = w / 16;
+    const int ls = int(((uint(data_a[ib].scales_l[2*ib64 + (part >> 1)]) >> (4*(part & 1))) & 0xF) | (((uint(data_a[ib].scales_h[ib64]) >> (2*part)) & 3) << 4)) - 32;
+    const uint off = 32 * ((extra >> (4*ib64 + part)) & 1);
+    const uint iw = (part & 1)*16 + w%16;
+    const uint ql = uint(data_a[ib].qs[ib64*32 + iw]);
+    const uint qh = uint(data_a[ib].qh[iw]);
+    const uint shift = 2*(ib64 % 4) + (part >> 1);
+    return d * ls * vals[off + (((ql >> (4*(part >> 1))) & 0xF) | (((qh >> shift) & 1) << 4))];
+#elif IQK_BITS == 6
+    const uint ib64 = j / 64, w = j % 64, part = w / 16;
+    const float dl = d * float(int(data_a[ib].scales[4*ib64 + part]));
+    const float m = ((extra >> (4*ib64 + part)) & 1) != 0 ? 1.0 : 0.0;
+    const uint iw = (part & 1)*16 + w%16;
+    const uint ql = uint(data_a[ib].qs[ib64*32 + iw]);
+    const uint qh = uint(data_a[ib].qh[(ib64/2)*32 + iw]);
+    const uint shift = 4*(ib64 % 2) + 2*(part >> 1);
+    const float q = float(((ql >> (4*(part >> 1))) & 0xF) | (((qh >> shift) & 3) << 4));
+    return dl * (-127.0 + q*(6.2568 + q*(-0.11218 + q*0.0011972)) + m);
+#endif
+}
+
+void main() {
+    // Each thread handles one 32-value chunk of a 256-value super-block.
+    const uint ib = gl_WorkGroupID.x * 32 + gl_LocalInvocationID.x / 8;
+    if (ib >= p.nel / 256) {
+        return;
+    }
+    const uint c = gl_LocalInvocationID.x % 8;
+    const uint b_idx = 256 * ib + 32 * c;
+    [[unroll]] for (uint l = 0; l < 32; ++l) {
+        data_b[b_idx + l] = D_TYPE(elem(ib, 32*c + l));
+    }
+}
