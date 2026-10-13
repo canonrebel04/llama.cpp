@@ -6040,6 +6040,11 @@ class GGMLQuantizationType(IntEnum):
     Q5_CR   = 49
     Q6_CR   = 50
     TQ3_4S  = 51  # fork id (turbo-tan uses 46)
+    IQ2_K   = 137  # same id as ik_llama.cpp
+    IQ3_K   = 138  # same id as ik_llama.cpp
+    IQ4_K   = 139  # same id as ik_llama.cpp
+    IQ5_K   = 140  # same id as ik_llama.cpp
+    IQ6_K   = 141  # same id as ik_llama.cpp
     PQ2_0   = 142  # same id as PrismML
     PTQ1_0  = 143  # same id as PrismML
     Q6_0    = 52  # fork id (beellama uses a different id)
@@ -6112,6 +6117,11 @@ class LlamaFileType(IntEnum):
     MOSTLY_Q6_CR         = 46  # except 1d tensors, ConvRot-rotated Q6_K
     MOSTLY_TQ3_4S        = 47  # except 1d tensors
     MOSTLY_PQ2_0         = 141  # except 1d tensors
+    MOSTLY_IQ2_K         = 148  # except 1d tensors (ik_llama.cpp uses 138)
+    MOSTLY_IQ3_K         = 149  # except 1d tensors (ik_llama.cpp uses 139)
+    MOSTLY_IQ4_K         = 150  # except 1d tensors (ik_llama.cpp uses 140)
+    MOSTLY_IQ5_K         = 151  # except 1d tensors (ik_llama.cpp uses 141)
+    MOSTLY_IQ6_K         = 152  # except 1d tensors (ik_llama.cpp uses 142)
     MOSTLY_PTQ1_0        = 143  # except 1d tensors
 
 
@@ -6273,6 +6283,11 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.TQ4_1S:  (32, 2 + 2 + 16),
     GGMLQuantizationType.TQ3_4S:  (32, 4 + 12),
     GGMLQuantizationType.PQ2_0:   (128, 2 + 32),
+    GGMLQuantizationType.IQ2_K:   (256, 2 + 2 + 256 // 32 + 256 // 4),
+    GGMLQuantizationType.IQ3_K:   (256, 2 + 2 + 2 + 256 // 32 + 256 // 4 + 256 // 8),
+    GGMLQuantizationType.IQ4_K:   (256, 2 + 2 + 256 // 64 + 256 // 32 + 256 // 2),
+    GGMLQuantizationType.IQ5_K:   (256, 2 + 2 + 256 // 64 + 256 // 32 + 256 // 2 + 256 // 8),
+    GGMLQuantizationType.IQ6_K:   (256, 2 + 2 + 256 // 16 + 256 // 2 + 256 // 4),
     GGMLQuantizationType.PTQ1_0:  (128, 2 + 24 + 2),
     GGMLQuantizationType.Q6_0: (32, 2 + 16 + 8),
     GGMLQuantizationType.Q6_1: (32, 4 + 16 + 8),

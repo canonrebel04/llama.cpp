@@ -616,3 +616,72 @@ static __device__ __forceinline__ void dequantize_tq3_1s(const void * vx, const 
     v.x = buf[iqs];
     v.y = buf[iqs + 1];
 }
+
+// ik_llama.cpp IQ_K types (IQ2_K .. IQ6_K), ported from ik_llama.cpp (Iwan Kawrakow, MIT).
+// Element-wise decoders: with qk = QK_K and qr = 1, v.x/v.y are elements iqs and iqs+1 of
+// super-block ib, matching the scalar CPU dequantize_row_iqN_k in ggml-iqk-quants.cpp.
+// Only the dequantize/get_rows paths are provided (mul_mat goes through dequant + cuBLAS).
+
+static __device__ __forceinline__ float iqk_iq2_k_elem(const block_iq2_k * x, const int j) {
+    const int ib32 = j / 32, w = j % 32, half = w / 16;
+    const float dl = __half2float(x->d) * (((x->scales[ib32] >> 4*half) & 0xf) - 8);
+    const int8_t * values = iq2nl_values + 4*((x->extra >> (2*ib32 + half)) & 1);
+    const uint8_t q = x->qs[(ib32/4)*32 + half*16 + w%16];
+    return dl * values[(q >> 2*(ib32%4)) & 3];
+}
+
+static __device__ __forceinline__ float iqk_iq3_k_elem(const block_iq3_k * x, const int j) {
+    const int ib32 = j / 32, w = j % 32, half = w / 16;
+    const int sign = (x->scales_h >> (2*ib32 + half)) & 1;
+    const float dl = __half2float(x->d) * ((2*((x->scales_l[ib32] >> 4*half) & 0xf) + 1) * (sign ? -1 : 1));
+    const int8_t * values = iq3nl_values + 8*((x->extra >> (2*ib32 + half)) & 1);
+    const int iw = half*16 + w%16;
+    const uint8_t ql = x->qs[(ib32/4)*32 + iw];
+    const uint8_t qh = x->qh[iw];
+    return dl * values[((ql >> 2*(ib32%4)) & 3) | (((qh >> (ib32%8)) & 1) << 2)];
+}
+
+static __device__ __forceinline__ float iqk_iq4_k_elem(const block_iq4_k * x, const int j) {
+    const int ib = j / 32, w = j % 32, half = w / 16;
+    const int sh = x->scales_h[ib/2] >> 4*(ib%2);
+    const int ls = (((x->scales_l[ib] >> 4*half) & 0xf) | (((sh >> 2*half) & 3) << 4)) - 32;
+    const int8_t * values = iq4k_values + 16*((x->extra >> (2*ib + half)) & 1);
+    const uint8_t q = x->qs[ib*16 + w%16];
+    return __half2float(x->d) * ls * values[(q >> 4*half) & 0xf];
+}
+
+static __device__ __forceinline__ float iqk_iq5_k_elem(const block_iq5_k * x, const int j) {
+    const int ib64 = j / 64, w = j % 64, part = w / 16;
+    const int ls = (((x->scales_l[2*ib64 + (part >> 1)] >> 4*(part & 1)) & 0xf) | (((x->scales_h[ib64] >> 2*part) & 3) << 4)) - 32;
+    const int8_t * values = iq5nl_values + 32*((x->extra >> (4*ib64 + part)) & 1);
+    const int iw = (part & 1)*16 + w%16;
+    const uint8_t ql = x->qs[ib64*32 + iw];
+    const uint8_t qh = x->qh[iw];
+    const int shift = 2*(ib64 % 4) + (part >> 1);
+    return __half2float(x->d) * ls * values[((ql >> 4*(part >> 1)) & 0xf) | (((qh >> shift) & 1) << 4)];
+}
+
+static __device__ __forceinline__ float iqk_iq6_k_elem(const block_iq6_k * x, const int j) {
+    const int ib64 = j / 64, w = j % 64, part = w / 16;
+    const float dl = __half2float(x->d) * x->scales[4*ib64 + part];
+    const float m  = (x->extra >> (4*ib64 + part)) & 1 ? 1.0f : 0.0f;
+    const int iw = (part & 1)*16 + w%16;
+    const uint8_t ql = x->qs[ib64*32 + iw];
+    const uint8_t qh = x->qh[(ib64/2)*32 + iw];
+    const int shift = 4*(ib64 % 2) + 2*(part >> 1);
+    const float q = ((ql >> 4*(part >> 1)) & 0xf) | (((qh >> shift) & 3) << 4);
+    return dl * (-127.f + q*(6.2568f + q*(-0.11218f + q*0.0011972f)) + m);
+}
+
+#define IQK_DEFINE_DEQUANT(T) \
+static __device__ __forceinline__ void dequantize_##T(const void * vx, const int64_t ib, const int iqs, float2 & v) { \
+    const block_##T * x = (const block_##T *) vx + ib; \
+    v.x = iqk_##T##_elem(x, iqs + 0); \
+    v.y = iqk_##T##_elem(x, iqs + 1); \
+}
+IQK_DEFINE_DEQUANT(iq2_k)
+IQK_DEFINE_DEQUANT(iq3_k)
+IQK_DEFINE_DEQUANT(iq4_k)
+IQK_DEFINE_DEQUANT(iq5_k)
+IQK_DEFINE_DEQUANT(iq6_k)
+#undef IQK_DEFINE_DEQUANT

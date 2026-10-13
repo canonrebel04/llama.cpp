@@ -167,6 +167,12 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_PQ2_0         = 141, // except 1d tensors (Prism group-128 Q2_0; same value as PrismML)
         LLAMA_FTYPE_MOSTLY_PQ2_0_LEGACY  = 142, // older PrismML value for the same format
         LLAMA_FTYPE_MOSTLY_PTQ1_0        = 143, // except 1d tensors (Prism group-128 ternary, 1.75 bpw)
+        // ik_llama.cpp IQ_K types; ik uses 138-142, which collide with the Prism values above
+        LLAMA_FTYPE_MOSTLY_IQ2_K           = 148, // except 1d tensors (ik_llama.cpp)
+        LLAMA_FTYPE_MOSTLY_IQ3_K           = 149, // except 1d tensors (ik_llama.cpp)
+        LLAMA_FTYPE_MOSTLY_IQ4_K           = 150, // except 1d tensors (ik_llama.cpp)
+        LLAMA_FTYPE_MOSTLY_IQ5_K           = 151, // except 1d tensors (ik_llama.cpp)
+        LLAMA_FTYPE_MOSTLY_IQ6_K           = 152, // except 1d tensors (ik_llama.cpp)
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };

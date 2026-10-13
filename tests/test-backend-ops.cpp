@@ -10031,6 +10031,7 @@ static const ggml_type all_types[] = {
     GGML_TYPE_IQ4_NL, GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_XS,
     GGML_TYPE_TQ3_1S, GGML_TYPE_TQ4_1S, GGML_TYPE_TQ3_4S,
     GGML_TYPE_PQ2_0, GGML_TYPE_PTQ1_0,
+    GGML_TYPE_IQ2_K, GGML_TYPE_IQ3_K, GGML_TYPE_IQ4_K, GGML_TYPE_IQ5_K, GGML_TYPE_IQ6_K,
 };
 
 static const ggml_type base_types[] = {

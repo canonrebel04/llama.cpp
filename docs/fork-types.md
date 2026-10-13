@@ -27,10 +27,15 @@ for the same type is **not** loadable here without remapping.
 | 56 | Q2_0S | Anbeeld/beellama.cpp | 32 / 10 | KV cache (beellama's "q2_0" for KV; upstream Q2_0=42 is a different format); beellama ID 47 |
 | 57 | Q2_1 | Anbeeld/beellama.cpp | 32 / 12 | KV cache; beellama ID 48 |
 
+| 137 | IQ2_K | ikawrakow/ik_llama.cpp | 256 / 76 | weights, 2.375 bpw; **same ID as ik_llama.cpp** |
+| 138 | IQ3_K | ikawrakow/ik_llama.cpp | 256 / 110 | weights, 3.44 bpw; **same ID as ik_llama.cpp** |
+| 139 | IQ4_K | ikawrakow/ik_llama.cpp | 256 / 144 | weights, 4.5 bpw; **same ID as ik_llama.cpp** |
+| 140 | IQ5_K | ikawrakow/ik_llama.cpp | 256 / 176 | weights, 5.5 bpw; **same ID as ik_llama.cpp** |
+| 141 | IQ6_K | ikawrakow/ik_llama.cpp | 256 / 212 | weights, 6.625 bpw; **same ID as ik_llama.cpp** |
 | 142 | PQ2_0 | PrismML llama.cpp fork | 128 / 34 | weights; **same ID as PrismML** so their GGUFs load unchanged |
 | 143 | PTQ1_0 | PrismML llama.cpp fork | 128 / 28 | weights (ternary, 1.75 bpw); **same ID as PrismML** |
 
-Next free ID: **58** (58-141 free; 142-143 taken by Prism types; GGML_TYPE_COUNT is 144). Reserve ranges per branch below and keep them in sync.
+Next free ID: **58** (58-136 free; 137-141 taken by ik_llama.cpp IQ_K types; 142-143 by Prism types; GGML_TYPE_COUNT is 144). Reserve ranges per branch below and keep them in sync.
 
 ## llama_ftype additions
 
@@ -45,6 +50,7 @@ Next free ID: **58** (58-141 free; 142-143 taken by Prism types; GGML_TYPE_COUNT
 | MOSTLY_PQ2_0 | 141 (PrismML value) |
 | MOSTLY_PQ2_0_LEGACY | 142 (older PrismML value, same format) |
 | MOSTLY_PTQ1_0 | 143 (PrismML value) |
+| MOSTLY_IQ2_K .. MOSTLY_IQ6_K | 148-152 (ik_llama.cpp uses 138-142, which collide with the Prism values; ftype is informational only) |
 
 ## GGUF compatibility / remapping
 
@@ -61,3 +67,23 @@ Next free ID: **58** (58-141 free; 142-143 taken by Prism types; GGML_TYPE_COUNT
 
 - beellama KV types are runtime KV-cache types only (never written into model GGUFs
   by this fork), so the ID difference vs beellama only matters for saved session/state files.
+
+## ik_llama.cpp IQ_K types (forks/ik-quants)
+
+Ported from [ik_llama.cpp](https://github.com/ikawrakow/ik_llama.cpp) (Iwan Kawrakow, MIT);
+croco.cpp carries the same code and was used as a cross-reference.
+
+Scope (kept small on purpose):
+
+- IQ2_K, IQ3_K, IQ4_K, IQ5_K, IQ6_K: block layouts, value tables, imatrix-aware
+  quantization, dequantization (`ggml/src/ggml-iqk-quants.cpp`, part of ggml-base) and
+  `llama-quantize` ftypes.
+- CPU: scalar `vec_dot_*_q8_k` against Q8_K activations. IQ4_K/IQ5_K use ik's scalar
+  dot products. IQ2_K/IQ3_K/IQ6_K only have SIMD (`iqk_mul_mat`) dot products in ik, so they
+  use a dequantize-and-dot fallback here. Correct but slow: the iqk_mul_mat GEMM kernels are **not** ported.
+- CUDA: dequantize (to F16/F32, contiguous and non-contiguous) and GET_ROWS. MUL_MAT goes
+  through dequantize + cuBLAS. No MMQ/MMVQ kernels, and MUL_MAT_ID is reported unsupported,
+  so MoE experts in these types run on the CPU.
+- Not ported: IQ*_KS/KSS/KL, the trellis IQ*_KT types, the _r4/_r8 interleaved
+  repacks, Vulkan/Metal kernels.
+- GGUFs made by ik_llama.cpp with these five types load unchanged (same type IDs).
