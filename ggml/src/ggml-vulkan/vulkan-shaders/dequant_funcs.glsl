@@ -760,8 +760,8 @@ vec2 get_dm(uint ib, uint a_offset) {
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     // PolarQuant 3-bit centroids (Lloyd-Max for Gaussian)
     const float centroids[8] = float[8](
-        -0.190685, -0.117832, -0.065717, -0.021460,
-         0.021460,  0.065717,  0.117832,  0.190685
+        -0.190207, -0.118786, -0.066822, -0.021663,
+         0.021663,  0.066822,  0.118786,  0.190207
     );
 
     // iqs is the element index within the block (0..31), we decode 2 consecutive elements

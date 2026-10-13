@@ -1340,6 +1340,13 @@ vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_t hsk, 
     if (path == FA_COOPMAT2 && k_type == GGML_TYPE_BF16 && !device->coopmat2_bf16_support) {
         path = FA_COOPMAT1;
     }
+    // the coopmat2 shader has no TurboQuant decode; the scalar/coopmat1 shaders do (dequantize4)
+    auto is_turbo = [](ggml_type t) {
+        return t == GGML_TYPE_TURBO2_0 || t == GGML_TYPE_TURBO3_0 || t == GGML_TYPE_TURBO4_0;
+    };
+    if (path == FA_COOPMAT2 && (is_turbo(k_type) || is_turbo(v_type))) {
+        path = device->coopmat1_fa_support ? FA_COOPMAT1 : FA_SCALAR;
+    }
     if (path == FA_COOPMAT1 && k_type == GGML_TYPE_BF16 && !device->coopmat_bf16_support) {
         path = FA_SCALAR;
     }
@@ -15397,6 +15404,22 @@ VkQueue ggml_backend_vk_get_queue_handle(ggml_backend_t backend) {
         return VK_NULL_HANDLE;
     }
     return (VkQueue)ctx->device->compute_queue->handle->queue;
+}
+
+void ggml_backend_vk_lock_queue(ggml_backend_t backend) {
+    GGML_ASSERT(ggml_backend_is_vk(backend));
+    ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
+    GGML_ASSERT(ctx->device && ctx->device->compute_queue &&
+                ctx->device->compute_queue->handle);
+    ctx->device->compute_queue->handle->lock();
+}
+
+void ggml_backend_vk_unlock_queue(ggml_backend_t backend) {
+    GGML_ASSERT(ggml_backend_is_vk(backend));
+    ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
+    GGML_ASSERT(ctx->device && ctx->device->compute_queue &&
+                ctx->device->compute_queue->handle);
+    ctx->device->compute_queue->handle->unlock();
 }
 
 VkPhysicalDevice ggml_backend_vk_get_physical_device(ggml_backend_t backend) {

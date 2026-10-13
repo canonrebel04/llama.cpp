@@ -1420,8 +1420,8 @@ layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTUR
 float16_t dequantFuncTURBO3_0(const in decodeBufTURBO3_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
 {
     const float centroids[8] = float[8](
-        -0.190685, -0.117832, -0.065717, -0.021460,
-         0.021460,  0.065717,  0.117832,  0.190685
+        -0.190207, -0.118786, -0.066822, -0.021663,
+         0.021663,  0.066822,  0.118786,  0.190207
     );
     const float norm = float(bl.block.norm);
     const uint j = coordInBlock[1];
