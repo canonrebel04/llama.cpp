@@ -34,8 +34,14 @@ for the same type is **not** loadable here without remapping.
 | 141 | IQ6_K | ikawrakow/ik_llama.cpp | 256 / 212 | weights, 6.625 bpw; **same ID as ik_llama.cpp** |
 | 142 | PQ2_0 | PrismML llama.cpp fork | 128 / 34 | weights; **same ID as PrismML** so their GGUFs load unchanged |
 | 143 | PTQ1_0 | PrismML llama.cpp fork | 128 / 28 | weights (ternary, 1.75 bpw); **same ID as PrismML** |
+| 144 | IQ4_KS | ikawrakow/ik_llama.cpp | 256 / 136 + 4 B/row | weights, 4.25 bpw, row-scaled; **same ID as ik_llama.cpp** |
+| 145 | IQ2_KS | ikawrakow/ik_llama.cpp | 256 / 70 + 2 B/row | weights, 2.1875 bpw, row-scaled; **same ID** |
+| 146 | IQ4_KSS | ikawrakow/ik_llama.cpp | 256 / 128 + 4 B/row | weights, 4.0 bpw, row-scaled; **same ID** |
+| 152 | IQ5_KS | ikawrakow/ik_llama.cpp | 256 / 168 + 4 B/row | weights, 5.25 bpw, row-scaled; **same ID** |
+| 156 | IQ3_KS | ikawrakow/ik_llama.cpp | 256 / 102 + 2 B/row | weights, 3.1875 bpw, row-scaled; **same ID** |
+| 157 | IQ2_KL | ikawrakow/ik_llama.cpp | 256 / 86 + 2 B/row | weights, 2.6875 bpw, row-scaled; **same ID** |
 
-Next free ID: **58** (58-136 free; 137-141 taken by ik_llama.cpp IQ_K types; 142-143 by Prism types; GGML_TYPE_COUNT is 144). Reserve ranges per branch below and keep them in sync.
+Next free ID: **58** (58-136 free; 137-141 taken by ik_llama.cpp IQ_K types; 142-143 by Prism types; 144-146/152/156/157 by ik row-scaled types; 147-151/153-155/158 reserved for the remaining ik types (IQ*_KT etc.); GGML_TYPE_COUNT is 158). Reserve ranges per branch below and keep them in sync.
 
 ## llama_ftype additions
 
@@ -51,6 +57,7 @@ Next free ID: **58** (58-136 free; 137-141 taken by ik_llama.cpp IQ_K types; 142
 | MOSTLY_PQ2_0_LEGACY | 142 (older PrismML value, same format) |
 | MOSTLY_PTQ1_0 | 143 (PrismML value) |
 | MOSTLY_IQ2_K .. MOSTLY_IQ6_K | 148-152 (ik_llama.cpp uses 138-142, which collide with the Prism values; ftype is informational only) |
+| MOSTLY_IQ4_KS, IQ2_KS, IQ4_KSS, IQ5_KS, IQ3_KS, IQ2_KL | 153-158 (ik values 137-146 collide with ours/Prism) |
 
 ## GGUF compatibility / remapping
 
@@ -87,3 +94,11 @@ Scope (kept small on purpose):
 - Not ported: IQ*_KS/KSS/KL, the trellis IQ*_KT types, the _r4/_r8 interleaved
   repacks, Vulkan/Metal kernels.
 - GGUFs made by ik_llama.cpp with these five types load unchanged (same type IDs).
+
+## Row-scaled types (row metadata)
+
+IQ4_KS, IQ2_KS, IQ4_KSS, IQ5_KS, IQ3_KS and IQ2_KL store a per-row scale (`float` or `half`,
+`ggml_type_traits.row_meta_size` bytes) in front of each row's blocks, exactly like ik_llama.cpp.
+`ggml_row_size()` / `nb[1]` include it, so `to_float` / `from_float` / `vec_dot` must be called on
+whole rows (`ggml_row_size(type, ne)` with `ne` > one row is not meaningful for these types).
+CPU only (scalar; dequant fallback dot for IQ2_KL / IQ3_KS / IQ4_KSS); no GPU backend support yet.

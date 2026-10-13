@@ -494,6 +494,20 @@ static void ggml_compute_forward_dup_from_q(
     const ggml_type type = src0->type;
     ggml_to_float_t const dequantize_row_q = ggml_get_type_traits(type)->to_float;
 
+    if (ggml_get_type_traits(type)->row_meta_size > 0) {
+        // row-scaled types (ik_llama.cpp IQ_KS etc.): the scale is per row, dequantize whole rows
+        GGML_ASSERT(ggml_are_same_shape(src0, dst) && nb10 == sizeof(float) && dst->type == GGML_TYPE_F32);
+        const int64_t nrows = ggml_nrows(src0);
+        const int64_t dr = (nrows + params->nth - 1)/params->nth;
+        const int64_t r0 = dr*params->ith, r1 = MIN(r0 + dr, nrows);
+        for (int64_t r = r0; r < r1; ++r) {
+            const int64_t i03 = r/(ne01*ne02), i02 = (r - i03*ne01*ne02)/ne01, i01 = r - i03*ne01*ne02 - i02*ne01;
+            dequantize_row_q((const char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03,
+                    (float *) ((char *) dst->data + i01*nb11 + i02*nb12 + i03*nb13), ne00);
+        }
+        return;
+    }
+
     size_t qk = ggml_blck_size(type);
     const int64_t nr = ggml_nelements(src1) / qk;
 
@@ -698,6 +712,12 @@ void ggml_compute_forward_add(
         case GGML_TYPE_IQ4_K:
         case GGML_TYPE_IQ5_K:
         case GGML_TYPE_IQ6_K:
+        case GGML_TYPE_IQ4_KS:
+        case GGML_TYPE_IQ2_KS:
+        case GGML_TYPE_IQ4_KSS:
+        case GGML_TYPE_IQ5_KS:
+        case GGML_TYPE_IQ3_KS:
+        case GGML_TYPE_IQ2_KL:
         case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q6_0:
         case GGML_TYPE_Q6_1:
@@ -1169,6 +1189,12 @@ void ggml_compute_forward_add1(
         case GGML_TYPE_IQ4_K:
         case GGML_TYPE_IQ5_K:
         case GGML_TYPE_IQ6_K:
+        case GGML_TYPE_IQ4_KS:
+        case GGML_TYPE_IQ2_KS:
+        case GGML_TYPE_IQ4_KSS:
+        case GGML_TYPE_IQ5_KS:
+        case GGML_TYPE_IQ3_KS:
+        case GGML_TYPE_IQ2_KL:
         case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q6_0:
         case GGML_TYPE_Q6_1:
@@ -1319,6 +1345,12 @@ void ggml_compute_forward_acc(
         case GGML_TYPE_IQ4_K:
         case GGML_TYPE_IQ5_K:
         case GGML_TYPE_IQ6_K:
+        case GGML_TYPE_IQ4_KS:
+        case GGML_TYPE_IQ2_KS:
+        case GGML_TYPE_IQ4_KSS:
+        case GGML_TYPE_IQ5_KS:
+        case GGML_TYPE_IQ3_KS:
+        case GGML_TYPE_IQ2_KL:
         case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q6_0:
         case GGML_TYPE_Q6_1:
@@ -4920,6 +4952,12 @@ void ggml_compute_forward_out_prod(
         case GGML_TYPE_IQ4_K:
         case GGML_TYPE_IQ5_K:
         case GGML_TYPE_IQ6_K:
+        case GGML_TYPE_IQ4_KS:
+        case GGML_TYPE_IQ2_KS:
+        case GGML_TYPE_IQ4_KSS:
+        case GGML_TYPE_IQ5_KS:
+        case GGML_TYPE_IQ3_KS:
+        case GGML_TYPE_IQ2_KL:
         case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q6_0:
         case GGML_TYPE_Q6_1:
@@ -5255,6 +5293,12 @@ void ggml_compute_forward_set(
         case GGML_TYPE_IQ4_K:
         case GGML_TYPE_IQ5_K:
         case GGML_TYPE_IQ6_K:
+        case GGML_TYPE_IQ4_KS:
+        case GGML_TYPE_IQ2_KS:
+        case GGML_TYPE_IQ4_KSS:
+        case GGML_TYPE_IQ5_KS:
+        case GGML_TYPE_IQ3_KS:
+        case GGML_TYPE_IQ2_KL:
         case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q6_0:
         case GGML_TYPE_Q6_1:
@@ -5499,6 +5543,12 @@ void ggml_compute_forward_get_rows(
         case GGML_TYPE_IQ4_K:
         case GGML_TYPE_IQ5_K:
         case GGML_TYPE_IQ6_K:
+        case GGML_TYPE_IQ4_KS:
+        case GGML_TYPE_IQ2_KS:
+        case GGML_TYPE_IQ4_KSS:
+        case GGML_TYPE_IQ5_KS:
+        case GGML_TYPE_IQ3_KS:
+        case GGML_TYPE_IQ2_KL:
         case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q6_0:
         case GGML_TYPE_Q6_1:
@@ -6283,6 +6333,12 @@ void ggml_compute_forward_clamp(
         case GGML_TYPE_IQ4_K:
         case GGML_TYPE_IQ5_K:
         case GGML_TYPE_IQ6_K:
+        case GGML_TYPE_IQ4_KS:
+        case GGML_TYPE_IQ2_KS:
+        case GGML_TYPE_IQ4_KSS:
+        case GGML_TYPE_IQ5_KS:
+        case GGML_TYPE_IQ3_KS:
+        case GGML_TYPE_IQ2_KL:
         case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q6_0:
         case GGML_TYPE_Q6_1:

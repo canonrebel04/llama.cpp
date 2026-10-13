@@ -454,7 +454,13 @@ extern "C" {
         // Prism ternary types: same ids as PrismML's fork for GGUF compatibility (see docs/fork-types.md)
         GGML_TYPE_PQ2_0   = 142, // Prism group-128 Q2_0
         GGML_TYPE_PTQ1_0  = 143, // Prism group-128 ternary
-        GGML_TYPE_COUNT   = 144,
+        GGML_TYPE_IQ4_KS  = 144, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_IQ2_KS  = 145, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_IQ4_KSS = 146, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_IQ5_KS  = 152, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_IQ3_KS  = 156, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_IQ2_KL  = 157, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_COUNT   = 158,
     };
 
     // [TAG_GGML_PREC]
@@ -3007,6 +3013,7 @@ extern "C" {
         bool                     is_quantized;
         ggml_to_float_t          to_float;
         ggml_from_float_t        from_float_ref;
+        size_t                   row_meta_size; // fork: bytes of per-row metadata (ik_llama.cpp row-scaled types) before the blocks
     };
 
     GGML_API const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type);

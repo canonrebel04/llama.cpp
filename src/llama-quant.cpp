@@ -215,9 +215,20 @@ struct tensor_metadata {
 
 static void llama_tensor_dequantize_impl(
     ggml_type type, const void * data, float * f32_output, std::vector<std::thread> & workers,
-    const size_t nelements, const int nthread
+    const size_t nelements, const int nthread, const int64_t n_per_row = 0
 ) {
     const ggml_type_traits * qtype = ggml_get_type_traits(type);
+    if (qtype->row_meta_size > 0) {
+        // row-scaled types (ik_llama.cpp IQ_KS etc.): to_float must see whole rows
+        GGML_ASSERT(n_per_row > 0 && nelements % n_per_row == 0 && qtype->to_float);
+        const size_t row_size = ggml_row_size(type, n_per_row);
+        for (size_t r = 0; r < nelements / n_per_row; ++r) {
+            qtype->to_float((const char *) data + r*row_size, f32_output + r*n_per_row, n_per_row);
+        }
+        GGML_UNUSED(workers);
+        GGML_UNUSED(nthread);
+        return;
+    }
     if (ggml_is_quantized(type)) {
         if (qtype->to_float == NULL) {
             throw std::runtime_error(format("type %s unsupported for integer quantization: no dequantization available", ggml_type_name(type)));
@@ -947,6 +958,12 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_IQ4_K:   return GGML_TYPE_IQ4_K;
         case LLAMA_FTYPE_MOSTLY_IQ5_K:   return GGML_TYPE_IQ5_K;
         case LLAMA_FTYPE_MOSTLY_IQ6_K:   return GGML_TYPE_IQ6_K;
+        case LLAMA_FTYPE_MOSTLY_IQ4_KS: return GGML_TYPE_IQ4_KS;
+        case LLAMA_FTYPE_MOSTLY_IQ2_KS: return GGML_TYPE_IQ2_KS;
+        case LLAMA_FTYPE_MOSTLY_IQ4_KSS: return GGML_TYPE_IQ4_KSS;
+        case LLAMA_FTYPE_MOSTLY_IQ5_KS: return GGML_TYPE_IQ5_KS;
+        case LLAMA_FTYPE_MOSTLY_IQ3_KS: return GGML_TYPE_IQ3_KS;
+        case LLAMA_FTYPE_MOSTLY_IQ2_KL: return GGML_TYPE_IQ2_KL;
         case LLAMA_FTYPE_MOSTLY_PQ2_0:
         case LLAMA_FTYPE_MOSTLY_PQ2_0_LEGACY: return GGML_TYPE_PQ2_0;
         case LLAMA_FTYPE_MOSTLY_PTQ1_0:  return GGML_TYPE_PTQ1_0;
@@ -1382,7 +1399,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                         if (f32_conv_buf.size() < (size_t) nelements_cur) {
                             f32_conv_buf.resize(nelements_cur);
                         }
-                        llama_tensor_dequantize_impl(tensor->type, src, (float *) f32_conv_buf.data(), workers, nelements_cur, nthread);
+                        llama_tensor_dequantize_impl(tensor->type, src, (float *) f32_conv_buf.data(), workers, nelements_cur, nthread, n_per_row);
                         f32_data = (const float *) f32_conv_buf.data();
                     }
 

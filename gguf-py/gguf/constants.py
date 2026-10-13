@@ -6045,6 +6045,12 @@ class GGMLQuantizationType(IntEnum):
     IQ4_K   = 139  # same id as ik_llama.cpp
     IQ5_K   = 140  # same id as ik_llama.cpp
     IQ6_K   = 141  # same id as ik_llama.cpp
+    IQ4_KS  = 144  # same id as ik_llama.cpp (row-scaled)
+    IQ2_KS  = 145  # same id as ik_llama.cpp (row-scaled)
+    IQ4_KSS = 146  # same id as ik_llama.cpp (row-scaled)
+    IQ5_KS  = 152  # same id as ik_llama.cpp (row-scaled)
+    IQ3_KS  = 156  # same id as ik_llama.cpp (row-scaled)
+    IQ2_KL  = 157  # same id as ik_llama.cpp (row-scaled)
     PQ2_0   = 142  # same id as PrismML
     PTQ1_0  = 143  # same id as PrismML
     Q6_0    = 52  # fork id (beellama uses a different id)
@@ -6122,6 +6128,12 @@ class LlamaFileType(IntEnum):
     MOSTLY_IQ4_K         = 150  # except 1d tensors (ik_llama.cpp uses 140)
     MOSTLY_IQ5_K         = 151  # except 1d tensors (ik_llama.cpp uses 141)
     MOSTLY_IQ6_K         = 152  # except 1d tensors (ik_llama.cpp uses 142)
+    MOSTLY_IQ4_KS        = 153  # except 1d tensors (ik_llama.cpp row-scaled type)
+    MOSTLY_IQ2_KS        = 154  # except 1d tensors (ik_llama.cpp row-scaled type)
+    MOSTLY_IQ4_KSS       = 155  # except 1d tensors (ik_llama.cpp row-scaled type)
+    MOSTLY_IQ5_KS        = 156  # except 1d tensors (ik_llama.cpp row-scaled type)
+    MOSTLY_IQ3_KS        = 157  # except 1d tensors (ik_llama.cpp row-scaled type)
+    MOSTLY_IQ2_KL        = 158  # except 1d tensors (ik_llama.cpp row-scaled type)
     MOSTLY_PTQ1_0        = 143  # except 1d tensors
 
 
@@ -6288,6 +6300,12 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.IQ4_K:   (256, 2 + 2 + 256 // 64 + 256 // 32 + 256 // 2),
     GGMLQuantizationType.IQ5_K:   (256, 2 + 2 + 256 // 64 + 256 // 32 + 256 // 2 + 256 // 8),
     GGMLQuantizationType.IQ6_K:   (256, 2 + 2 + 256 // 16 + 256 // 2 + 256 // 4),
+    GGMLQuantizationType.IQ4_KS: (256, 256 // 32 + 256 // 2),
+    GGMLQuantizationType.IQ2_KS: (256, 2 + 256 // 64 + 256 // 4),
+    GGMLQuantizationType.IQ4_KSS: (256, 256 // 2),
+    GGMLQuantizationType.IQ5_KS: (256, 256 // 32 + 256 // 2 + 256 // 8),
+    GGMLQuantizationType.IQ3_KS: (256, 2 + 256 // 64 + 256 // 4 + 256 // 8),
+    GGMLQuantizationType.IQ2_KL: (256, 2 + 256 // 64 + 256 // 4 + 256 // 16),
     GGMLQuantizationType.PTQ1_0:  (128, 2 + 24 + 2),
     GGMLQuantizationType.Q6_0: (32, 2 + 16 + 8),
     GGMLQuantizationType.Q6_1: (32, 4 + 16 + 8),
@@ -6385,3 +6403,14 @@ KEY_TOKENIZER_FIM_SEP_ID = Keys.Tokenizer.FIM_SEP_ID
 KEY_TOKENIZER_PREFIX_ID  = Keys.Tokenizer.PREFIX_ID
 KEY_TOKENIZER_SUFFIX_ID  = Keys.Tokenizer.SUFFIX_ID
 KEY_TOKENIZER_MIDDLE_ID  = Keys.Tokenizer.MIDDLE_ID
+
+
+# fork: per-row metadata bytes stored before the blocks (ik_llama.cpp row-scaled types)
+GGML_ROW_META_SIZES: dict[GGMLQuantizationType, int] = {
+    GGMLQuantizationType.IQ4_KS: 4,
+    GGMLQuantizationType.IQ2_KS: 2,
+    GGMLQuantizationType.IQ4_KSS: 4,
+    GGMLQuantizationType.IQ5_KS: 4,
+    GGMLQuantizationType.IQ3_KS: 2,
+    GGMLQuantizationType.IQ2_KL: 2,
+}

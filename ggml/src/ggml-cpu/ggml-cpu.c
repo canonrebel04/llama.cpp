@@ -563,6 +563,42 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_Q8_K,
         .nrows                    = 1,
     },
+    [GGML_TYPE_IQ4_KS] = {
+        .from_float               = quantize_row_iq4_ks,
+        .vec_dot                  = vec_dot_iq4_ks_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ2_KS] = {
+        .from_float               = quantize_row_iq2_ks,
+        .vec_dot                  = vec_dot_iq2_ks_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ4_KSS] = {
+        .from_float               = quantize_row_iq4_kss,
+        .vec_dot                  = vec_dot_iq4_kss_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ5_KS] = {
+        .from_float               = quantize_row_iq5_ks,
+        .vec_dot                  = vec_dot_iq5_ks_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ3_KS] = {
+        .from_float               = quantize_row_iq3_ks,
+        .vec_dot                  = vec_dot_iq3_ks_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ2_KL] = {
+        .from_float               = quantize_row_iq2_kl,
+        .vec_dot                  = vec_dot_iq2_kl_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
     [GGML_TYPE_PQ2_0] = {
         .from_float               = quantize_row_pq2_0,
         .vec_dot                  = ggml_vec_dot_pq2_0_q8_K,
