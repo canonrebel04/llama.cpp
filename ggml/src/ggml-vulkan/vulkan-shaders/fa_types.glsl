@@ -22,6 +22,12 @@ uint fa_block_elems(uint ty) {
         case GGML_TYPE_TURBO2_0: return uint(QUANT_K_TURBO2_0);
         case GGML_TYPE_TURBO3_0: return uint(QUANT_K_TURBO3_0);
         case GGML_TYPE_TURBO4_0: return uint(QUANT_K_TURBO4_0);
+        case GGML_TYPE_Q6_0: return 32u;
+        case GGML_TYPE_Q6_1: return 32u;
+        case GGML_TYPE_Q3_0: return 32u;
+        case GGML_TYPE_Q3_1: return 32u;
+        case GGML_TYPE_Q2_0S: return 32u;
+        case GGML_TYPE_Q2_1: return 32u;
         default:           return 1u;
     }
 }
