@@ -685,3 +685,51 @@ IQK_DEFINE_DEQUANT(iq4_k)
 IQK_DEFINE_DEQUANT(iq5_k)
 IQK_DEFINE_DEQUANT(iq6_k)
 #undef IQK_DEFINE_DEQUANT
+
+// beellama KV-cache types (Anbeeld/beellama.cpp): element-wise decoders for qk = 32, qr = 1.
+// They mirror dequantize_row_q{6_0,6_1,3_0,3_1,2_0s,2_1} in ggml-quants.c.
+static __device__ __forceinline__ float bee_q6_0_elem(const block_q6_0 * x, const int j) {
+    const int jj = j % 16, hi = j / 16;
+    const int h = (x->qh[jj % 8] >> (4*(jj / 8))) & 0x0F;
+    const int q = hi ? ((x->qs[jj] >> 4) | ((h & 0x0C) << 2)) : ((x->qs[jj] & 0x0F) | ((h & 0x03) << 4));
+    return (q - 32) * __half2float(x->d);
+}
+static __device__ __forceinline__ float bee_q6_1_elem(const block_q6_1 * x, const int j) {
+    const int jj = j % 16, hi = j / 16;
+    const int h = (x->qh[jj % 8] >> (4*(jj / 8))) & 0x0F;
+    const int q = hi ? ((x->qs[jj] >> 4) | ((h & 0x0C) << 2)) : ((x->qs[jj] & 0x0F) | ((h & 0x03) << 4));
+    const float2 dm = __half22float2(x->dm);
+    return q * dm.x + dm.y;
+}
+static __device__ __forceinline__ int bee_q3_q(const uint8_t * qs, const uint8_t * qhb, const int j) {
+    const uint32_t qh = qhb[0] | (qhb[1] << 8) | (qhb[2] << 16) | ((uint32_t) qhb[3] << 24);
+    return ((qs[j % 8] >> (2*(j / 8))) & 0x03) | (((qh >> j) & 1) << 2);
+}
+static __device__ __forceinline__ float bee_q3_0_elem(const block_q3_0 * x, const int j) {
+    return (bee_q3_q(x->qs, x->qh, j) - 4) * __half2float(x->d);
+}
+static __device__ __forceinline__ float bee_q3_1_elem(const block_q3_1 * x, const int j) {
+    const float2 dm = __half22float2(x->dm);
+    return bee_q3_q(x->qs, x->qh, j) * dm.x + dm.y;
+}
+static __device__ __forceinline__ float bee_q2_0s_elem(const block_q2_0s * x, const int j) {
+    return (((x->qs[j % 8] >> (2*(j / 8))) & 0x03) - 2) * __half2float(x->d);
+}
+static __device__ __forceinline__ float bee_q2_1_elem(const block_q2_1 * x, const int j) {
+    const float2 dm = __half22float2(x->dm);
+    return ((x->qs[j % 8] >> (2*(j / 8))) & 0x03) * dm.x + dm.y;
+}
+
+#define BEE_DEFINE_DEQUANT(T) \
+static __device__ __forceinline__ void dequantize_##T(const void * vx, const int64_t ib, const int iqs, float2 & v) { \
+    const block_##T * x = (const block_##T *) vx + ib; \
+    v.x = bee_##T##_elem(x, iqs + 0); \
+    v.y = bee_##T##_elem(x, iqs + 1); \
+}
+BEE_DEFINE_DEQUANT(q6_0)
+BEE_DEFINE_DEQUANT(q6_1)
+BEE_DEFINE_DEQUANT(q3_0)
+BEE_DEFINE_DEQUANT(q3_1)
+BEE_DEFINE_DEQUANT(q2_0s)
+BEE_DEFINE_DEQUANT(q2_1)
+#undef BEE_DEFINE_DEQUANT
