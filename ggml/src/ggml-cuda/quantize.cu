@@ -50,6 +50,13 @@ static __device__ __forceinline__ float nvfp4_native_scale_error(
 #endif // CUDART_VERSION >= 12080
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 
+// TQ3_4S weight WHT sign pattern (bit i set => sign -1), matches TQ3_0_SIGNS / TQ_WEIGHT_SIGNS.
+#define GGML_CUDA_TQ3_SIGN_MASK 0x696b4b4au
+static __device__ __forceinline__ float ggml_cuda_tq3_sign(const int i) {
+    return (GGML_CUDA_TQ3_SIGN_MASK >> i) & 1u ? -1.0f : 1.0f;
+}
+
+template <bool tq3_rotate>
 __launch_bounds__(CUDA_QUANTIZE_BLOCK_SIZE, 1)
 static __global__ void quantize_q8_1(
         const float * x_ptr, void * vy_ptr,
@@ -81,7 +88,21 @@ static __global__ void quantize_q8_1(
     const int64_t iqs = i_cont % QK8_1; // quant index
 
     ggml_cuda_pdl_sync();
-    const float xi = i0 < ne00 ? x[i03*s03 + i02*s02 + i01*s01 + i00] : 0.0f;
+    float xi = i0 < ne00 ? x[i03*s03 + i02*s02 + i01*s01 + i00] : 0.0f;
+
+    if constexpr (tq3_rotate) {
+        // Fused TQ3_4S activation rotation (from turbo-tan, charpdev): each q8_1 block is
+        // exactly one 32-point WHT group, so the butterfly runs on the warp lanes that
+        // reduce the block. Applies the forward RHT (sign -> WHT -> 1/sqrt(32)), so
+        // dot(dequant(w), x) == dot(centroids*scale, rotate(x)).
+        float val = xi * ggml_cuda_tq3_sign(iqs);
+#pragma unroll
+        for (int step = 1; step < QK8_1; step <<= 1) {
+            const float other = __shfl_xor_sync(0xFFFFFFFF, val, step, 32);
+            val = (iqs & step) ? (other - val) : (other + val);
+        }
+        xi = val * 0.17677669529663688f;
+    }
     float amax = fabsf(xi);
     float sum = 0.0f;
 
@@ -588,8 +609,11 @@ void quantize_row_q8_1_cuda(
     const dim3 num_blocks(block_num_x, ne1, ne2*ne3);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE, 1, 1);
     const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(num_blocks, block_size, 0, stream);
-    ggml_cuda_kernel_launch(quantize_q8_1, launch_params, x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
-    GGML_UNUSED(type_src0);
+    if (type_src0 == GGML_TYPE_TQ3_4S) {
+        ggml_cuda_kernel_launch(quantize_q8_1<true>, launch_params, x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
+    } else {
+        ggml_cuda_kernel_launch(quantize_q8_1<false>, launch_params, x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
+    }
 }
 
 void quantize_mmq_q8_1_cuda(
