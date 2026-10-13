@@ -9,6 +9,7 @@
 #include "quants.h"
 #include "ggml-quants.h"
 #include "ggml-iqk-quants.h"
+#include "iqk-simd.h"
 #include "ggml-threading.h"
 #include "unary-ops.h"
 #include "binary-ops.h"
@@ -535,25 +536,25 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     },
     [GGML_TYPE_IQ2_K] = {
         .from_float               = quantize_row_iq2_k,
-        .vec_dot                  = vec_dot_iq2_k_q8_k,
+        .vec_dot                  = ggml_cpu_vec_dot_iq2_k_q8_k,
         .vec_dot_type             = GGML_TYPE_Q8_K,
         .nrows                    = 1,
     },
     [GGML_TYPE_IQ3_K] = {
         .from_float               = quantize_row_iq3_k,
-        .vec_dot                  = vec_dot_iq3_k_q8_k,
+        .vec_dot                  = ggml_cpu_vec_dot_iq3_k_q8_k,
         .vec_dot_type             = GGML_TYPE_Q8_K,
         .nrows                    = 1,
     },
     [GGML_TYPE_IQ4_K] = {
         .from_float               = quantize_row_iq4_k,
-        .vec_dot                  = vec_dot_iq4_k_q8_k,
+        .vec_dot                  = ggml_cpu_vec_dot_iq4_k_q8_k,
         .vec_dot_type             = GGML_TYPE_Q8_K,
         .nrows                    = 1,
     },
     [GGML_TYPE_IQ5_K] = {
         .from_float               = quantize_row_iq5_k,
-        .vec_dot                  = vec_dot_iq5_k_q8_k,
+        .vec_dot                  = ggml_cpu_vec_dot_iq5_k_q8_k,
         .vec_dot_type             = GGML_TYPE_Q8_K,
         .nrows                    = 1,
     },
