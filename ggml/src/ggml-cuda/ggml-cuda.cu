@@ -6978,8 +6978,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_IQ4_K:
                     case GGML_TYPE_IQ5_K:
                     case GGML_TYPE_IQ6_K:
-                        // ik_llama.cpp IQ_K: dequantize + cuBLAS only (no MMQ/MMVQ kernels yet)
-                        return op->op == GGML_OP_MUL_MAT;
+                        // ik_llama.cpp IQ_K: MMVQ for small batches, dequantize + cuBLAS otherwise (no MMQ)
+                        return true;
                     default:
                         return false;
                 }
