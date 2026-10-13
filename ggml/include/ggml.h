@@ -445,7 +445,10 @@ extern "C" {
         GGML_TYPE_Q3_1  = 55, // fork: beellama KV type
         GGML_TYPE_Q2_0S = 56, // fork: beellama KV type
         GGML_TYPE_Q2_1  = 57, // fork: beellama KV type
-        GGML_TYPE_COUNT   = 58,
+        // Prism ternary types: same ids as PrismML's fork for GGUF compatibility (see docs/fork-types.md)
+        GGML_TYPE_PQ2_0   = 142, // Prism group-128 Q2_0
+        GGML_TYPE_PTQ1_0  = 143, // Prism group-128 ternary
+        GGML_TYPE_COUNT   = 144,
     };
 
     // [TAG_GGML_PREC]

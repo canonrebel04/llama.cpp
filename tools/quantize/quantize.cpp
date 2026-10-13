@@ -49,6 +49,8 @@ static const std::vector<quant_option> QUANT_OPTIONS = {
     { "TQ2_0",    LLAMA_FTYPE_MOSTLY_TQ2_0,    " 2.06 bpw ternarization",           },
     { "TQ3_1S",   LLAMA_FTYPE_MOSTLY_TQ3_1S,   " 4.00 bpw WHT-rotated",             },
     { "TQ4_1S",   LLAMA_FTYPE_MOSTLY_TQ4_1S,   " 5.00 bpw WHT-rotated",             },
+    { "PQ2_0",    LLAMA_FTYPE_MOSTLY_PQ2_0,    " 2.13 bpw quantization (group 128, Prism)", },
+    { "PTQ1_0",   LLAMA_FTYPE_MOSTLY_PTQ1_0,   " 1.75 bpw ternarization (group 128, Prism)", },
     { "TQ3_4S",   LLAMA_FTYPE_MOSTLY_TQ3_4S,   " 4.00 bpw WHT-rotated, 4x E3M5 scales", },
     { "Q2_K",     LLAMA_FTYPE_MOSTLY_Q2_K,     " 2.96G, +3.5199 ppl @ Llama-3-8B",  },
     { "Q2_K_S",   LLAMA_FTYPE_MOSTLY_Q2_K_S,   " 2.96G, +3.1836 ppl @ Llama-3-8B",  },

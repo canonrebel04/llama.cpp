@@ -164,6 +164,9 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_Q5_CR         = 45, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q6_CR         = 46, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_TQ3_4S        = 47, // except 1d tensors (fork)
+        LLAMA_FTYPE_MOSTLY_PQ2_0         = 141, // except 1d tensors (Prism group-128 Q2_0; same value as PrismML)
+        LLAMA_FTYPE_MOSTLY_PQ2_0_LEGACY  = 142, // older PrismML value for the same format
+        LLAMA_FTYPE_MOSTLY_PTQ1_0        = 143, // except 1d tensors (Prism group-128 ternary, 1.75 bpw)
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };

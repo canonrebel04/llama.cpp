@@ -388,6 +388,26 @@ typedef struct {
 } block_tq3_4s;
 static_assert(sizeof(block_tq3_4s) == 16, "wrong tq3_4s block size");
 
+// PQ2_0 / PTQ1_0: PrismML group-128 2-bit and ternary types (from PrismML's llama.cpp fork)
+#define QK_PQ2_0 128
+typedef struct {
+    ggml_half d;                   // delta (scale)
+    uint8_t qs[QK_PQ2_0 / 4];      // 2 bits per element
+} block_pq2_0;
+static_assert(sizeof(block_pq2_0) == sizeof(ggml_half) + QK_PQ2_0 / 4, "wrong pq2_0 block size/padding");
+
+#define QK_PTQ1_0 128
+typedef struct {
+    uint8_t qs[(QK_PTQ1_0 - 4*QK_PTQ1_0/64)/5]; // 24 B, 5 trits per byte -> 120 values
+    uint8_t qh[QK_PTQ1_0/64];                   //  2 B, 4 trits per byte ->   8 values
+    ggml_half d;                                // scale
+} block_ptq1_0;
+static_assert(sizeof(block_ptq1_0) == sizeof(ggml_half) + QK_PTQ1_0/64 + (QK_PTQ1_0 - 4*QK_PTQ1_0/64)/5, "wrong ptq1_0 block size/padding");
+#define QI_PQ2_0 (QK_PQ2_0 / 32)
+#define QR_PQ2_0 1
+#define QI_PTQ1_0 (QK_PTQ1_0 / 32)
+#define QR_PTQ1_0 1
+
 // beellama KV-cache scalar types (Anbeeld/beellama.cpp)
 #define QK6_0 32
 typedef struct {

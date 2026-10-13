@@ -6040,6 +6040,8 @@ class GGMLQuantizationType(IntEnum):
     Q5_CR   = 49
     Q6_CR   = 50
     TQ3_4S  = 51  # fork id (turbo-tan uses 46)
+    PQ2_0   = 142  # same id as PrismML
+    PTQ1_0  = 143  # same id as PrismML
     Q6_0    = 52  # fork id (beellama uses a different id)
     Q6_1    = 53  # fork id (beellama uses a different id)
     Q3_0    = 54  # fork id (beellama uses a different id)
@@ -6109,6 +6111,8 @@ class LlamaFileType(IntEnum):
     MOSTLY_Q5_CR         = 45  # except 1d tensors, ConvRot-rotated Q5_0
     MOSTLY_Q6_CR         = 46  # except 1d tensors, ConvRot-rotated Q6_K
     MOSTLY_TQ3_4S        = 47  # except 1d tensors
+    MOSTLY_PQ2_0         = 141  # except 1d tensors
+    MOSTLY_PTQ1_0        = 143  # except 1d tensors
 
 
     GUESSED              = 1024  # not specified in the model file
@@ -6268,6 +6272,8 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.TQ3_1S:  (32, 2 + 2 + 12),
     GGMLQuantizationType.TQ4_1S:  (32, 2 + 2 + 16),
     GGMLQuantizationType.TQ3_4S:  (32, 4 + 12),
+    GGMLQuantizationType.PQ2_0:   (128, 2 + 32),
+    GGMLQuantizationType.PTQ1_0:  (128, 2 + 24 + 2),
     GGMLQuantizationType.Q6_0: (32, 2 + 16 + 8),
     GGMLQuantizationType.Q6_1: (32, 4 + 16 + 8),
     GGMLQuantizationType.Q3_0: (32, 2 + 4 + 8),
