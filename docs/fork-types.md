@@ -106,7 +106,7 @@ IQ4_KS, IQ2_KS, IQ4_KSS, IQ5_KS, IQ3_KS and IQ2_KL store a per-row scale (`float
 `ggml_type_traits.row_meta_size` bytes) in front of each row's blocks, exactly like ik_llama.cpp.
 `ggml_row_size()` / `nb[1]` include it, so `to_float` / `from_float` / `vec_dot` must be called on
 whole rows (`ggml_row_size(type, ne)` with `ne` > one row is not meaningful for these types).
-CPU only (scalar; dequant fallback dot for IQ2_KL / IQ3_KS / IQ4_KSS); no GPU backend support yet.
+CPU (scalar; dequant fallback dot for IQ2_KL / IQ3_KS / IQ4_KSS). Vulkan: MUL_MAT through row-aware dequant (dequant_iqks.comp) to f16; no mat-vec, MUL_MAT_ID or GET_ROWS.
 
 IQ1_KT..IQ4_KT (trellis) use the same float row scale. CPU quantize, dequantize and a row-dequant
 dot; quantization uses a scalar port of ik's AVX2-only `find_best_match` (bit-identical output to

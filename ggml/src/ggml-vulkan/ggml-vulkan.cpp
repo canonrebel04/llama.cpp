@@ -3268,6 +3268,12 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q3_1], "dequant_q3_1", dequant_q3_1_len, dequant_q3_1_data, "main", 2, 5 * sizeof(uint32_t), {256 * 32, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q2_0S], "dequant_q2_0s", dequant_q2_0s_len, dequant_q2_0s_data, "main", 2, 5 * sizeof(uint32_t), {256 * 32, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q2_1], "dequant_q2_1", dequant_q2_1_len, dequant_q2_1_data, "main", 2, 5 * sizeof(uint32_t), {256 * 32, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_IQ4_KS], "dequant_iq4_ks", dequant_iq4_ks_len, dequant_iq4_ks_data, "main", 2, 5 * sizeof(uint32_t), {256 * 256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_IQ2_KS], "dequant_iq2_ks", dequant_iq2_ks_len, dequant_iq2_ks_data, "main", 2, 5 * sizeof(uint32_t), {256 * 256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_IQ4_KSS], "dequant_iq4_kss", dequant_iq4_kss_len, dequant_iq4_kss_data, "main", 2, 5 * sizeof(uint32_t), {256 * 256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_IQ5_KS], "dequant_iq5_ks", dequant_iq5_ks_len, dequant_iq5_ks_data, "main", 2, 5 * sizeof(uint32_t), {256 * 256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_IQ3_KS], "dequant_iq3_ks", dequant_iq3_ks_len, dequant_iq3_ks_data, "main", 2, 5 * sizeof(uint32_t), {256 * 256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_IQ2_KL], "dequant_iq2_kl", dequant_iq2_kl_len, dequant_iq2_kl_data, "main", 2, 5 * sizeof(uint32_t), {256 * 256, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_PTQ1_0], "dequant_ptq1_0", dequant_ptq1_0_len, dequant_ptq1_0_data, "main", 2, 5 * sizeof(uint32_t), {256 * 128, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_IQ4_NL],  "dequant_iq4_nl",  dequant_iq4_nl_len,  dequant_iq4_nl_data,  "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_MXFP4],   "dequant_mxfp4",   dequant_mxfp4_len,   dequant_mxfp4_data,   "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
@@ -5725,6 +5731,12 @@ vk_pipeline ggml_vk_get_to_fp16(ggml_backend_vk_context * ctx, ggml_type type) {
         case GGML_TYPE_Q3_1:
         case GGML_TYPE_Q2_0S:
         case GGML_TYPE_Q2_1:
+        case GGML_TYPE_IQ4_KS:
+        case GGML_TYPE_IQ2_KS:
+        case GGML_TYPE_IQ4_KSS:
+        case GGML_TYPE_IQ5_KS:
+        case GGML_TYPE_IQ3_KS:
+        case GGML_TYPE_IQ2_KL:
         case GGML_TYPE_PTQ1_0:
             break;
         default:
@@ -6272,7 +6284,7 @@ static void ggml_vk_matmul_id(
 bool ggml_vk_dim01_contiguous(const ggml_tensor * tensor) {
     return
         tensor->nb[0] == ggml_type_size(tensor->type) &&
-        tensor->nb[1] == (tensor->nb[0]*tensor->ne[0])/ggml_blck_size(tensor->type) &&
+        tensor->nb[1] == ggml_row_size(tensor->type, tensor->ne[0]) && // includes row meta for row-scaled types
         (tensor->ne[3] == 1 || tensor->nb[3] == tensor->nb[2]*tensor->ne[2]);
 }
 
@@ -6629,7 +6641,8 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
 
     const uint32_t split_k = ggml_vk_guess_split_k(ctx, ne01, ne11, ne10, disable_split_k, pipeline);
 
-    const uint64_t qx_sz = ggml_type_size(src0->type) * x_ne / ggml_blck_size(src0->type);
+    // ggml_row_size includes the per-row scale of the row-scaled types
+    const uint64_t qx_sz = ggml_row_size(src0->type, ne00) * (x_ne / ne00);
     const uint64_t qy_sz = ggml_type_size(src1->type) * y_ne / ggml_blck_size(src1->type);
     const uint64_t x_sz = !qx_needs_dequant ? qx_sz : sizeof(ggml_fp16_t) * x_ne;
     const uint64_t y_sz = quantize_y ? (ggml_vk_align_size(y_ne, 128) * ggml_type_size(GGML_TYPE_Q8_1) / ggml_blck_size(GGML_TYPE_Q8_1)) : (y_f32_kernel ? sizeof(float) * y_ne : sizeof(ggml_fp16_t) * y_ne);
@@ -7486,7 +7499,10 @@ static bool ggml_vk_is_iqk_type(ggml_type t) {
            // fork weight types with dequant shaders only (dequant_forktypes.comp)
            t == GGML_TYPE_TQ3_4S || t == GGML_TYPE_PQ2_0 || t == GGML_TYPE_PTQ1_0 ||
            t == GGML_TYPE_Q6_0 || t == GGML_TYPE_Q6_1 || t == GGML_TYPE_Q3_0 ||
-           t == GGML_TYPE_Q3_1 || t == GGML_TYPE_Q2_0S || t == GGML_TYPE_Q2_1;
+           t == GGML_TYPE_Q3_1 || t == GGML_TYPE_Q2_0S || t == GGML_TYPE_Q2_1 ||
+           // ik row-scaled types (dequant_iqks.comp)
+           t == GGML_TYPE_IQ4_KS || t == GGML_TYPE_IQ2_KS || t == GGML_TYPE_IQ4_KSS ||
+           t == GGML_TYPE_IQ5_KS || t == GGML_TYPE_IQ3_KS || t == GGML_TYPE_IQ2_KL;
 }
 
 void ggml_vk_mul_mat(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
@@ -16137,6 +16153,12 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_Q3_1:
                     case GGML_TYPE_Q2_0S:
                     case GGML_TYPE_Q2_1:
+                    case GGML_TYPE_IQ4_KS:
+                    case GGML_TYPE_IQ2_KS:
+                    case GGML_TYPE_IQ4_KSS:
+                    case GGML_TYPE_IQ5_KS:
+                    case GGML_TYPE_IQ3_KS:
+                    case GGML_TYPE_IQ2_KL:
                     case GGML_TYPE_PTQ1_0:
                         // ik_llama.cpp IQ_K and fork weight types: dequant + f16 matmul only, no MUL_MAT_ID pipelines
                         if (op->op != GGML_OP_MUL_MAT) {
