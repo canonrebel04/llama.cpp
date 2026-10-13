@@ -1036,6 +1036,14 @@ struct ggml_cuda_type_traits<GGML_TYPE_IQ6_K> {
     static constexpr int bs = sizeof(block_iq6_k);
 };
 
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_TQ3_4S> {
+    static constexpr int qk = QK_TQ3_0;
+    static constexpr int qr = 1;
+    static constexpr int qi = 1;
+    static constexpr int bs = sizeof(block_tq3_4s);
+};
+
 // PQ2_0 / PTQ1_0 (from PrismML llama.cpp fork)
 template<>
 template<>

@@ -5,6 +5,7 @@
 #include "unary.cuh"
 #include "vecdotq.cuh"
 #include "iqk-vecdot.cuh"
+#include "tq3-4s-vecdot.cuh"
 
 #include <cstdint>
 #include <limits>
@@ -51,6 +52,7 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) 
         case GGML_TYPE_IQ4_K:   return vec_dot_iq4_k_q8_1;
         case GGML_TYPE_IQ5_K:   return vec_dot_iq5_k_q8_1;
         case GGML_TYPE_IQ6_K:   return vec_dot_iq6_k_q8_1;
+        case GGML_TYPE_TQ3_4S:  return vec_dot_tq3_4s_q8_1;
         case GGML_TYPE_Q4_0:    return vec_dot_q4_0_q8_1;
         case GGML_TYPE_Q4_1:    return vec_dot_q4_1_q8_1;
         case GGML_TYPE_Q5_0:    return vec_dot_q5_0_q8_1;
@@ -86,6 +88,7 @@ static constexpr __host__ __device__ int get_vdr_mmvq(ggml_type type) {
         case GGML_TYPE_IQ4_K:   return VDR_IQK_Q8_1_MMVQ;
         case GGML_TYPE_IQ5_K:   return VDR_IQK_Q8_1_MMVQ;
         case GGML_TYPE_IQ6_K:   return VDR_IQK_Q8_1_MMVQ;
+        case GGML_TYPE_TQ3_4S:  return VDR_TQ3_4S_Q8_1_MMVQ;
         case GGML_TYPE_Q4_0:    return VDR_Q4_0_Q8_1_MMVQ;
         case GGML_TYPE_Q4_1:    return VDR_Q4_1_Q8_1_MMVQ;
         case GGML_TYPE_Q5_0:    return VDR_Q5_0_Q8_1_MMVQ;
@@ -332,8 +335,7 @@ int get_mmvq_mmid_max_batch(ggml_type type, int cc) {
 }
 
 // Types the mmvq kernel switch can actually dispatch (plus the fork TQ weight types,
-// which callers route to their own fused kernels). Any other quantized type (e.g. TQ3_4S)
-// must fall through to the dequantize + cuBLAS path instead of aborting in mmvq.
+// which callers route to their own fused kernels). Any other quantized type must fall through to the dequantize + cuBLAS path instead of aborting in mmvq.
 static bool ggml_cuda_mmvq_type_supported(enum ggml_type type) {
     switch (type) {
         case GGML_TYPE_PQ2_0:
@@ -345,6 +347,7 @@ static bool ggml_cuda_mmvq_type_supported(enum ggml_type type) {
         case GGML_TYPE_IQ2_S: case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ1_S: case GGML_TYPE_IQ1_M:
         case GGML_TYPE_IQ4_NL: case GGML_TYPE_IQ4_XS: case GGML_TYPE_IQ3_S:
         case GGML_TYPE_TQ3_1S: case GGML_TYPE_TQ4_1S:
+        case GGML_TYPE_TQ3_4S: // activations rotated in quantize_q8_1<true>
             return true;
         default:
             return false;
@@ -791,6 +794,26 @@ static __global__ void mul_mat_vec_q(
 #pragma unroll
                 for (int j = 0; j < ncols_dst; ++j) {
                     tmp[j][i] += q6_K_dot_decoded_q8_1(w, &y[j*stride_col_y + kby]);
+                }
+            }
+        } else if constexpr (type == GGML_TYPE_TQ3_4S && ncols_dst > 1) {
+            // decode each TQ3_4S block once per row and reuse it across all columns
+            // (adapted from turbo-tan 920e5b3be / d27d39d68, charpdev)
+#pragma unroll
+            for (int i = 0; i < rows_per_cuda_block; ++i) {
+                const tq3_4s_decoded w = tq3_4s_decode(vx, kbx_offset + i*stride_row_x + kbx);
+#pragma unroll
+                for (int j = 0; j < ncols_dst; ++j) {
+                    tmp[j][i] += tq3_4s_dot_decoded_q8_1(w, &y[j*stride_col_y + kby]);
+                }
+                if constexpr (has_fusion) {
+                    if (use_gate) {
+                        const tq3_4s_decoded wg = tq3_4s_decode(vgate, kbx_offset + i*stride_row_x + kbx);
+#pragma unroll
+                        for (int j = 0; j < ncols_dst; ++j) {
+                            tmp_gate[j][i] += tq3_4s_dot_decoded_q8_1(wg, &y[j*stride_col_y + kby]);
+                        }
+                    }
                 }
             }
         } else {
@@ -1520,6 +1543,12 @@ static void mul_mat_vec_q_switch_type(
             break;
         case GGML_TYPE_IQ6_K:
             mul_mat_vec_q_switch_ncols_dst<GGML_TYPE_IQ6_K>
+                (vx, vy, ids, fusion, dst, ncols_x, nrows_x, ncols_dst, stride_row_x, stride_col_y, stride_col_dst,
+                 nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y, stride_channel_dst,
+                 nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, stream, allow_small_k);
+            break;
+        case GGML_TYPE_TQ3_4S:
+            mul_mat_vec_q_switch_ncols_dst<GGML_TYPE_TQ3_4S>
                 (vx, vy, ids, fusion, dst, ncols_x, nrows_x, ncols_dst, stride_row_x, stride_col_y, stride_col_dst,
                  nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y, stride_channel_dst,
                  nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, stream, allow_small_k);
