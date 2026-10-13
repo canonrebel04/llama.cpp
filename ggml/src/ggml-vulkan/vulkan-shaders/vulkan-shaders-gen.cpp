@@ -1002,6 +1002,12 @@ void process_shaders() {
     string_to_spv("dequant_tq4_1s", "dequant_tq4_1s.comp",
         merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"D_TYPE", "float16_t"}}));
 
+    // ik_llama.cpp IQ_K types: dequant-to-f16 only (MUL_MAT runs as dequant + f16 matmul)
+    for (int bits = 2; bits <= 6; ++bits) {
+        string_to_spv("dequant_iq" + std::to_string(bits) + "_k", "dequant_iqk.comp",
+            merge_maps(base_dict, {{"IQK_BITS", std::to_string(bits)}, {"D_TYPE", "float16_t"}}));
+    }
+
     // TQ3_1S is the sibling 3-bit type (8 Lloyd-Max levels, 8 indices packed
     // per 3 bytes, 16 B blocks). Unlike TQ4_1S it had no Vulkan shaders at all,
     // so dequant_tq3_1s.comp and mul_mat_vec_tq3_1s.comp are new. Everything in
