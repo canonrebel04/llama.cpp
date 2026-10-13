@@ -1002,6 +1002,11 @@ void process_shaders() {
     string_to_spv("dequant_tq4_1s", "dequant_tq4_1s.comp",
         merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"D_TYPE", "float16_t"}}));
 
+    // fork weight types without native shaders: dequant-to-f16 only (dequant + f16 matmul)
+    string_to_spv("dequant_tq3_4s", "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "1"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("dequant_pq2_0",  "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "2"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("dequant_ptq1_0", "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "3"}, {"D_TYPE", "float16_t"}}));
+
     // ik_llama.cpp IQ_K types: dequant-to-f16 only (MUL_MAT runs as dequant + f16 matmul)
     for (int bits = 2; bits <= 6; ++bits) {
         string_to_spv("dequant_iq" + std::to_string(bits) + "_k", "dequant_iqk.comp",
