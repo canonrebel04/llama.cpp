@@ -7,7 +7,7 @@
 #include <vector>
 #include <random>
 int main(){
-  ggml_type ts[]={GGML_TYPE_IQ4_KS,GGML_TYPE_IQ2_KS,GGML_TYPE_IQ4_KSS,GGML_TYPE_IQ5_KS,GGML_TYPE_IQ3_KS,GGML_TYPE_IQ2_KL};
+  ggml_type ts[]={GGML_TYPE_IQ4_KS,GGML_TYPE_IQ2_KS,GGML_TYPE_IQ4_KSS,GGML_TYPE_IQ5_KS,GGML_TYPE_IQ3_KS,GGML_TYPE_IQ2_KL,GGML_TYPE_IQ1_KT,GGML_TYPE_IQ2_KT,GGML_TYPE_IQ3_KT,GGML_TYPE_IQ4_KT};
   const int K=512,M=5,N=3; int bad=0;
   for(auto t:ts){
     ggml_init_params ip={256*1024*1024,nullptr,false}; auto ctx=ggml_init(ip);
