@@ -1,0 +1,102 @@
+#version 450
+
+// Dequantize fork weight types to D_TYPE for the generic dequant -> f16 matmul path.
+// FORK_TYPE 1: TQ3_4S (turbo-tan; 32 values / 16 B, E3M5 scales, 3-bit codes, inverse RHT)
+// FORK_TYPE 2: PQ2_0  (PrismML; 128 values, 2-bit {-1,0,1,2} * d)
+// FORK_TYPE 3: PTQ1_0 (PrismML; 128 values, base-3 packed ternary * d)
+// Mirrors dequantize_row_tq3_4s (ggml-turbo-quant.c) and dequantize_row_pq2_0 /
+// dequantize_row_ptq1_0 (ggml-quants.c). One invocation decodes one block.
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_8bit_storage : require
+
+layout (push_constant) uniform parameter
+{
+    uint M;
+    uint K;
+    uint stride_a;
+    uint stride_b;
+    uint nel;
+} p;
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#if FORK_TYPE == 1
+#define QK 32
+struct block_t { uint8_t d[4]; uint8_t qs[12]; };
+const float centroids[8] = { -1.996684, -1.291398, -0.740341, -0.247508, 0.230106, 0.725222, 1.277503, 1.988943 };
+const uint sign_mask = 0x696b4b4au; // bit i set => sign -1 (TQ3_0_SIGNS)
+#elif FORK_TYPE == 2
+#define QK 128
+struct block_t { float16_t d; uint8_t qs[32]; };
+#elif FORK_TYPE == 3
+#define QK 128
+struct block_t { uint8_t qs[24]; uint8_t qh[2]; float16_t d; };
+#endif
+
+layout (binding = 0) readonly buffer A {block_t data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
+
+#if FORK_TYPE == 3
+float trit(uint q, uint n) {
+    const uint pw = n == 0 ? 1u : n == 1 ? 3u : n == 2 ? 9u : n == 3 ? 27u : 81u;
+    const uint qq = (q * pw) & 0xFFu;
+    return float(int((qq * 3u) >> 8) - 1);
+}
+#endif
+
+void main() {
+    const uint ib = gl_GlobalInvocationID.x;
+    if (ib >= p.nel / QK) {
+        return;
+    }
+    const uint b_idx = QK * ib;
+#if FORK_TYPE == 1
+    float buf[32];
+    [[unroll]] for (uint g = 0; g < 4; ++g) {
+        const uint sb = uint(data_a[ib].d[g]);
+        const float d = sb == 0 ? 0.0 : ldexp(1.0 + float(sb & 31u) / 32.0, int(sb >> 5) - 9);
+        const uint bits = uint(data_a[ib].qs[3*g]) | (uint(data_a[ib].qs[3*g+1]) << 8) | (uint(data_a[ib].qs[3*g+2]) << 16);
+        [[unroll]] for (uint j = 0; j < 8; ++j) {
+            buf[8*g + j] = centroids[(bits >> (3*j)) & 7u] * d;
+        }
+    }
+    [[unroll]] for (uint step = 1; step < 32; step <<= 1) {
+        [[unroll]] for (uint i = 0; i < 32; i += step << 1) {
+            [[unroll]] for (uint j = i; j < i + step; ++j) {
+                const float a = buf[j], b = buf[j + step];
+                buf[j] = a + b; buf[j + step] = a - b;
+            }
+        }
+    }
+    [[unroll]] for (uint j = 0; j < 32; ++j) {
+        const float s = ((sign_mask >> j) & 1u) != 0 ? -0.17677669529663688 : 0.17677669529663688;
+        data_b[b_idx + j] = D_TYPE(buf[j] * s);
+    }
+#elif FORK_TYPE == 2
+    const float d = float(data_a[ib].d);
+    [[unroll]] for (uint j = 0; j < 128; ++j) {
+        const uint q = (uint(data_a[ib].qs[j/4]) >> (2*(j%4))) & 3u;
+        data_b[b_idx + j] = D_TYPE(float(int(q) - 1) * d);
+    }
+#elif FORK_TYPE == 3
+    const float d = float(data_a[ib].d);
+    [[unroll]] for (uint n = 0; n < 5; ++n) {
+        [[unroll]] for (uint m = 0; m < 16; ++m) {
+            data_b[b_idx + n*16 + m] = D_TYPE(trit(uint(data_a[ib].qs[m]), n) * d);
+        }
+        [[unroll]] for (uint m = 0; m < 8; ++m) {
+            data_b[b_idx + 80 + n*8 + m] = D_TYPE(trit(uint(data_a[ib].qs[16 + m]), n) * d);
+        }
+    }
+    [[unroll]] for (uint n = 0; n < 4; ++n) {
+        [[unroll]] for (uint h = 0; h < 2; ++h) {
+            data_b[b_idx + 120 + n*2 + h] = D_TYPE(trit(uint(data_a[ib].qh[h]), n) * d);
+        }
+    }
+#endif
+}
