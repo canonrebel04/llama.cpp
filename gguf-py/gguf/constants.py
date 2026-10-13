@@ -6039,6 +6039,7 @@ class GGMLQuantizationType(IntEnum):
     Q8_CR   = 48
     Q5_CR   = 49
     Q6_CR   = 50
+    TQ3_4S  = 51  # fork id (turbo-tan uses 46)
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -6101,6 +6102,7 @@ class LlamaFileType(IntEnum):
     MOSTLY_TQ4_1S        = 44  # except 1d tensors
     MOSTLY_Q5_CR         = 45  # except 1d tensors, ConvRot-rotated Q5_0
     MOSTLY_Q6_CR         = 46  # except 1d tensors, ConvRot-rotated Q6_K
+    MOSTLY_TQ3_4S        = 47  # except 1d tensors
 
 
     GUESSED              = 1024  # not specified in the model file
@@ -6259,6 +6261,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.Q2_0:    (64, 2 + 16),
     GGMLQuantizationType.TQ3_1S:  (32, 2 + 2 + 12),
     GGMLQuantizationType.TQ4_1S:  (32, 2 + 2 + 16),
+    GGMLQuantizationType.TQ3_4S:  (32, 4 + 12),
     # same layout as Q8_0, but the rows are rotated in groups of 256 (ConvRot)
     GGMLQuantizationType.Q8_CR:   (256, 8 * (2 + 32)),
     # same layout as Q5_0, but the rows are rotated in groups of 256 (ConvRot)

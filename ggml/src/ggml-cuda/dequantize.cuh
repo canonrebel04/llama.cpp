@@ -509,6 +509,40 @@ static __device__ __forceinline__ void dequantize_tq4_1s(const void * vx, const 
     v.y = buf[iqs + 1];
 }
 
+// TQ3_4S (turbo-tan): 4 x E3M5 per-8 scales + 3-bit indices, inverse WHT.
+static __device__ __forceinline__ float tq3_4s_decode_scale_dev(uint8_t b) {
+    return b == 0 ? 0.0f : ldexpf(1.0f + (float)(b & 31) / 32.0f, (b >> 5) - 9);
+}
+static __device__ __forceinline__ void dequantize_tq3_4s(const void * vx, const int64_t ib, const int iqs, float2 & v) {
+    const block_tq3_4s * x = (const block_tq3_4s *) vx;
+    float buf[32];
+    for (int g = 0; g < 4; g++) {
+        const float d = tq3_4s_decode_scale_dev(x[ib].d[g]);
+        const uint8_t * qp = x[ib].qs + g * 3;
+        uint8_t idx[8];
+        idx[0] =  qp[0]       & 7;
+        idx[1] = (qp[0] >> 3) & 7;
+        idx[2] = ((qp[0] >> 6) | (qp[1] << 2)) & 7;
+        idx[3] = (qp[1] >> 1) & 7;
+        idx[4] = (qp[1] >> 4) & 7;
+        idx[5] = ((qp[1] >> 7) | (qp[2] << 1)) & 7;
+        idx[6] = (qp[2] >> 2) & 7;
+        idx[7] = (qp[2] >> 5) & 7;
+        for (int i = 0; i < 8; i++) buf[g * 8 + i] = TQ3_CENTROIDS_WEIGHT[idx[i]] * d;
+    }
+    for (int step = 1; step < 32; step <<= 1) {
+        for (int i = 0; i < 32; i += step << 1) {
+            for (int j = i; j < i + step; j++) {
+                float a = buf[j], b = buf[j + step];
+                buf[j] = a + b; buf[j + step] = a - b;
+            }
+        }
+    }
+    const float inv_sqrt32 = 0.17677669529663688f;
+    v.x = buf[iqs]     * inv_sqrt32 * TQ_WEIGHT_SIGNS[iqs];
+    v.y = buf[iqs + 1] * inv_sqrt32 * TQ_WEIGHT_SIGNS[iqs + 1];
+}
+
 // TQ3_1S: 3-bit weight type with inverse WHT, block size 32, dual half-block scales
 // 3-bit packing: 4 groups of 8 indices in 3 bytes each (24 bits = 8 * 3-bit)
 static __device__ __forceinline__ void dequantize_tq3_1s(const void * vx, const int64_t ib, const int iqs, float2 & v) {
