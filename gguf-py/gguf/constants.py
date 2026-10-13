@@ -6051,6 +6051,10 @@ class GGMLQuantizationType(IntEnum):
     IQ5_KS  = 152  # same id as ik_llama.cpp (row-scaled)
     IQ3_KS  = 156  # same id as ik_llama.cpp (row-scaled)
     IQ2_KL  = 157  # same id as ik_llama.cpp (row-scaled)
+    IQ1_KT  = 158  # same id as ik_llama.cpp (trellis, row-scaled)
+    IQ2_KT  = 153  # same id as ik_llama.cpp (trellis, row-scaled)
+    IQ3_KT  = 154  # same id as ik_llama.cpp (trellis, row-scaled)
+    IQ4_KT  = 155  # same id as ik_llama.cpp (trellis, row-scaled)
     PQ2_0   = 142  # same id as PrismML
     PTQ1_0  = 143  # same id as PrismML
     Q6_0    = 52  # fork id (beellama uses a different id)
@@ -6134,6 +6138,10 @@ class LlamaFileType(IntEnum):
     MOSTLY_IQ5_KS        = 156  # except 1d tensors (ik_llama.cpp row-scaled type)
     MOSTLY_IQ3_KS        = 157  # except 1d tensors (ik_llama.cpp row-scaled type)
     MOSTLY_IQ2_KL        = 158  # except 1d tensors (ik_llama.cpp row-scaled type)
+    MOSTLY_IQ1_KT         = 159  # except 1d tensors (ik_llama.cpp trellis type)
+    MOSTLY_IQ2_KT         = 160  # except 1d tensors (ik_llama.cpp trellis type)
+    MOSTLY_IQ3_KT         = 161  # except 1d tensors (ik_llama.cpp trellis type)
+    MOSTLY_IQ4_KT         = 162  # except 1d tensors (ik_llama.cpp trellis type)
     MOSTLY_PTQ1_0        = 143  # except 1d tensors
 
 
@@ -6304,6 +6312,10 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.IQ2_KS: (256, 2 + 256 // 64 + 256 // 4),
     GGMLQuantizationType.IQ4_KSS: (256, 256 // 2),
     GGMLQuantizationType.IQ5_KS: (256, 256 // 32 + 256 // 2 + 256 // 8),
+    GGMLQuantizationType.IQ1_KT: (256, 256 // 8 + 256 // 16 + 256 // 32),
+    GGMLQuantizationType.IQ2_KT: (256, 256 // 4 + 256 // 64),
+    GGMLQuantizationType.IQ3_KT: (256, 256 // 4 + 256 // 8 + 256 // 64),
+    GGMLQuantizationType.IQ4_KT: (256, 256 // 2),
     GGMLQuantizationType.IQ3_KS: (256, 2 + 256 // 64 + 256 // 4 + 256 // 8),
     GGMLQuantizationType.IQ2_KL: (256, 2 + 256 // 64 + 256 // 4 + 256 // 16),
     GGMLQuantizationType.PTQ1_0:  (128, 2 + 24 + 2),
@@ -6413,4 +6425,8 @@ GGML_ROW_META_SIZES: dict[GGMLQuantizationType, int] = {
     GGMLQuantizationType.IQ5_KS: 4,
     GGMLQuantizationType.IQ3_KS: 2,
     GGMLQuantizationType.IQ2_KL: 2,
+    GGMLQuantizationType.IQ1_KT: 4,
+    GGMLQuantizationType.IQ2_KT: 4,
+    GGMLQuantizationType.IQ3_KT: 4,
+    GGMLQuantizationType.IQ4_KT: 4,
 }

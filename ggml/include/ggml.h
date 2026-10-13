@@ -460,7 +460,11 @@ extern "C" {
         GGML_TYPE_IQ5_KS  = 152, // ik_llama.cpp row-scaled type, same id
         GGML_TYPE_IQ3_KS  = 156, // ik_llama.cpp row-scaled type, same id
         GGML_TYPE_IQ2_KL  = 157, // ik_llama.cpp row-scaled type, same id
-        GGML_TYPE_COUNT   = 158,
+        GGML_TYPE_IQ2_KT  = 153, // ik_llama.cpp trellis type, same id
+        GGML_TYPE_IQ3_KT  = 154, // ik_llama.cpp trellis type, same id
+        GGML_TYPE_IQ4_KT  = 155, // ik_llama.cpp trellis type, same id
+        GGML_TYPE_IQ1_KT  = 158, // ik_llama.cpp trellis type, same id
+        GGML_TYPE_COUNT   = 159,
     };
 
     // [TAG_GGML_PREC]

@@ -40,8 +40,12 @@ for the same type is **not** loadable here without remapping.
 | 152 | IQ5_KS | ikawrakow/ik_llama.cpp | 256 / 168 + 4 B/row | weights, 5.25 bpw, row-scaled; **same ID** |
 | 156 | IQ3_KS | ikawrakow/ik_llama.cpp | 256 / 102 + 2 B/row | weights, 3.1875 bpw, row-scaled; **same ID** |
 | 157 | IQ2_KL | ikawrakow/ik_llama.cpp | 256 / 86 + 2 B/row | weights, 2.6875 bpw, row-scaled; **same ID** |
+| 153 | IQ2_KT | ikawrakow/ik_llama.cpp | 256 / 68 + 4 B/row | weights, trellis, 2.125 bpw, row-scaled; **same ID** |
+| 154 | IQ3_KT | ikawrakow/ik_llama.cpp | 256 / 100 + 4 B/row | weights, trellis, 3.125 bpw, row-scaled; **same ID** |
+| 155 | IQ4_KT | ikawrakow/ik_llama.cpp | 256 / 128 + 4 B/row | weights, trellis, 4.0 bpw, row-scaled; **same ID** |
+| 158 | IQ1_KT | ikawrakow/ik_llama.cpp | 256 / 56 + 4 B/row | weights, trellis, 1.75 bpw, row-scaled; **same ID** |
 
-Next free ID: **58** (58-136 free; 137-141 taken by ik_llama.cpp IQ_K types; 142-143 by Prism types; 144-146/152/156/157 by ik row-scaled types; 147-151/153-155/158 reserved for the remaining ik types (IQ*_KT etc.); GGML_TYPE_COUNT is 158). Reserve ranges per branch below and keep them in sync.
+Next free ID: **58** (58-136 free; 137-141 taken by ik_llama.cpp IQ_K types; 142-143 by Prism types; 144-146/152/156/157 by ik row-scaled types; 153-155/158 by ik trellis types; 147-151 reserved for remaining ik types; GGML_TYPE_COUNT is 159). Reserve ranges per branch below and keep them in sync.
 
 ## llama_ftype additions
 
@@ -58,6 +62,7 @@ Next free ID: **58** (58-136 free; 137-141 taken by ik_llama.cpp IQ_K types; 142
 | MOSTLY_PTQ1_0 | 143 (PrismML value) |
 | MOSTLY_IQ2_K .. MOSTLY_IQ6_K | 148-152 (ik_llama.cpp uses 138-142, which collide with the Prism values; ftype is informational only) |
 | MOSTLY_IQ4_KS, IQ2_KS, IQ4_KSS, IQ5_KS, IQ3_KS, IQ2_KL | 153-158 (ik values 137-146 collide with ours/Prism) |
+| MOSTLY_IQ1_KT, IQ2_KT, IQ3_KT, IQ4_KT | 159-162 (ik values 142-147 collide) |
 
 ## GGUF compatibility / remapping
 
@@ -102,3 +107,10 @@ IQ4_KS, IQ2_KS, IQ4_KSS, IQ5_KS, IQ3_KS and IQ2_KL store a per-row scale (`float
 `ggml_row_size()` / `nb[1]` include it, so `to_float` / `from_float` / `vec_dot` must be called on
 whole rows (`ggml_row_size(type, ne)` with `ne` > one row is not meaningful for these types).
 CPU only (scalar; dequant fallback dot for IQ2_KL / IQ3_KS / IQ4_KSS); no GPU backend support yet.
+
+IQ1_KT..IQ4_KT (trellis) use the same float row scale. CPU quantize, dequantize and a row-dequant
+dot; quantization uses a scalar port of ik's AVX2-only `find_best_match` (bit-identical output to
+the AVX2 path on test data) and is slow. Rows must be a multiple of 256 (ik's tail format is not
+carried). IQ2_KT dequant applies ik's run-time 1.05 factor, IQ3_KT the 1.01 factor, matching ik's
+inference kernels. CUDA: row-aware dequant kernels are registered in the `*_nc` converters only;
+MUL_MAT/GET_ROWS are not enabled in supports_op (no GPU to verify).

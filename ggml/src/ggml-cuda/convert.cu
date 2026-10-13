@@ -1,4 +1,5 @@
 #include "convert.cuh"
+#include "dequant-kt.cuh"
 #include "dequantize.cuh"
 #include "turbo-quant.cuh"
 
@@ -1015,6 +1016,9 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
 }
 
 to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
+    if (auto f = ggml_cuda_get_dequantize_kt_nc<half>(type)) {
+        return f;
+    }
     switch (type) {
         case GGML_TYPE_F32:
             return convert_unary_cuda<float>;
@@ -1078,6 +1082,9 @@ to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
 }
 
 to_bf16_nc_cuda_t ggml_get_to_bf16_nc_cuda(ggml_type type) {
+    if (auto f = ggml_cuda_get_dequantize_kt_nc<nv_bfloat16>(type)) {
+        return f;
+    }
     switch (type) {
         case GGML_TYPE_F32:
             return convert_unary_cuda<float, nv_bfloat16>;
@@ -1129,6 +1136,9 @@ to_bf16_nc_cuda_t ggml_get_to_bf16_nc_cuda(ggml_type type) {
 }
 
 to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
+    if (auto f = ggml_cuda_get_dequantize_kt_nc<float>(type)) {
+        return f;
+    }
     switch (type) {
         case GGML_TYPE_F16:
             return convert_unary_cuda<half, float>;

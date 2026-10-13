@@ -217,6 +217,10 @@ static int test_vec_dot_q(bool verbose) {
                 type == GGML_TYPE_IQ2_K   ? MAX_QUANTIZATION_TOTAL_ERROR_2BITS :
                 type == GGML_TYPE_IQ2_KS || type == GGML_TYPE_IQ2_KL ? MAX_QUANTIZATION_TOTAL_ERROR_2BITS :
                 type == GGML_TYPE_IQ3_KS  ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
+                type == GGML_TYPE_IQ1_KT  ? MAX_QUANTIZATION_TOTAL_ERROR_TERNARY :
+                type == GGML_TYPE_IQ2_KT  ? MAX_QUANTIZATION_TOTAL_ERROR_TERNARY :
+                type == GGML_TYPE_IQ3_KT  ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS_XXS :
+                type == GGML_TYPE_IQ4_KT  ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
                 type == GGML_TYPE_IQ3_K   ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
                 type == GGML_TYPE_IQ2_S   ? MAX_QUANTIZATION_TOTAL_ERROR_2BITS :
                 type == GGML_TYPE_Q3_K    ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
@@ -245,6 +249,8 @@ static int test_vec_dot_q(bool verbose) {
                 type == GGML_TYPE_TQ3_1S || type == GGML_TYPE_Q3_0 || type == GGML_TYPE_Q3_1 ||
                 type == GGML_TYPE_IQ2_K || type == GGML_TYPE_IQ3_K || type == GGML_TYPE_IQ2_KS || type == GGML_TYPE_IQ2_KL || type == GGML_TYPE_IQ3_KS
                 ? MAX_DOT_PRODUCT_ERROR_LOWBIT
+                : type == GGML_TYPE_IQ1_KT || type == GGML_TYPE_IQ2_KT
+                ? MAX_DOT_PRODUCT_ERROR_TERNARY
                 : type == GGML_TYPE_Q2_0S || type == GGML_TYPE_Q2_1
                 ? MAX_DOT_PRODUCT_ERROR_TERNARY
                 : type == GGML_TYPE_Q1_0

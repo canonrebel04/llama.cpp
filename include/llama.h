@@ -179,6 +179,10 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_IQ5_KS          = 156, // except 1d tensors (ik_llama.cpp row-scaled)
         LLAMA_FTYPE_MOSTLY_IQ3_KS          = 157, // except 1d tensors (ik_llama.cpp row-scaled)
         LLAMA_FTYPE_MOSTLY_IQ2_KL          = 158, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ1_KT             = 159, // except 1d tensors (ik_llama.cpp trellis)
+        LLAMA_FTYPE_MOSTLY_IQ2_KT             = 160, // except 1d tensors (ik_llama.cpp trellis)
+        LLAMA_FTYPE_MOSTLY_IQ3_KT             = 161, // except 1d tensors (ik_llama.cpp trellis)
+        LLAMA_FTYPE_MOSTLY_IQ4_KT             = 162, // except 1d tensors (ik_llama.cpp trellis)
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };

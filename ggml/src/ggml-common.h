@@ -738,6 +738,32 @@ typedef struct {
 } block_iq5_ks;
 static_assert(sizeof(block_iq5_ks) == QK_K/32 + QK_K/2 + QK_K/8, "wrong iq5_ks block size/padding");
 
+// ik_llama.cpp trellis types (row-scaled: float per row in front of the blocks)
+typedef struct {
+    uint8_t  sh[QK_K/32]; // 4-bit scales + 13th bits for groups of 8
+    uint8_t  ql[QK_K/8];  //  low 8 bits for groups of 8
+    uint8_t  qh[QK_K/16]; // high 4 bits for groups of 8
+} block_iq1_kt;
+static_assert(sizeof(block_iq1_kt) == QK_K/8 + QK_K/16 + QK_K/32, "wrong iq1_kt block size/padding");
+
+typedef struct {
+    uint8_t  scales[QK_K/64];
+    uint8_t  ql[QK_K/4];
+} block_iq2_kt;
+static_assert(sizeof(block_iq2_kt) == QK_K/4 + QK_K/64, "wrong iq2_kt block size/padding");
+
+typedef struct {
+    uint8_t  scales[QK_K/64];
+    uint8_t  ql[QK_K/4];
+    uint8_t  qh[QK_K/8];
+} block_iq3_kt;
+static_assert(sizeof(block_iq3_kt) == QK_K/4 + QK_K/8 + QK_K/64, "wrong iq3_kt block size/padding");
+
+typedef struct {
+    uint32_t qs[QK_K/8];
+} block_iq4_kt;
+static_assert(sizeof(block_iq4_kt) == QK_K/2, "wrong iq4_kt block size/padding");
+
 typedef struct {
     uint16_t extra;
     uint8_t scales[QK_K/64];
