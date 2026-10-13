@@ -102,8 +102,13 @@ static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float m
             }
         }
 
-        std::vector<uint8_t> dataq(ggml_row_size(tensor->type, nels));
-        {
+        // row-scaled types (fork) store a per-row scale: quantize whole rows
+        const bool row_meta = ggml_row_size(tensor->type, ggml_blck_size(tensor->type)) != ggml_type_size(tensor->type);
+        std::vector<uint8_t> dataq(row_meta ? ggml_row_size(tensor->type, tensor->ne[0]) * (nels / tensor->ne[0])
+                                            : ggml_row_size(tensor->type, nels));
+        if (row_meta) {
+            ggml_quantize_chunk(tensor->type, data.data(), dataq.data(), 0, nels / tensor->ne[0], tensor->ne[0], im);
+        } else {
             // parallel quantization by block
             size_t blck_size = ggml_blck_size(tensor->type);
             size_t n_blocks = nels / blck_size;
