@@ -173,6 +173,12 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_IQ4_K           = 150, // except 1d tensors (ik_llama.cpp)
         LLAMA_FTYPE_MOSTLY_IQ5_K           = 151, // except 1d tensors (ik_llama.cpp)
         LLAMA_FTYPE_MOSTLY_IQ6_K           = 152, // except 1d tensors (ik_llama.cpp)
+        LLAMA_FTYPE_MOSTLY_IQ4_KS          = 153, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ2_KS          = 154, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ4_KSS         = 155, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ5_KS          = 156, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ3_KS          = 157, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ2_KL          = 158, // except 1d tensors (ik_llama.cpp row-scaled)
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };

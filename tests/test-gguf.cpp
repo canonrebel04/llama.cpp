@@ -474,7 +474,7 @@ static FILE * get_handcrafted_file(const unsigned int seed, const enum handcraft
             ne = 0;
         }
 
-        offset += GGML_PAD(ggml_row_size(type, ne), (uint64_t) alignment);
+        offset += GGML_PAD(ne == 0 ? 0 : ggml_row_size(type, shape[0]) * (ne / shape[0]), (uint64_t) alignment);
     }
 
     while (ftell(file) % alignment != 0) {
@@ -711,7 +711,7 @@ static bool handcrafted_check_tensors(const gguf_context * gguf_ctx, const unsig
         for (size_t j = 1; j < GGML_MAX_DIMS; ++j) {
             ne *= shape[j];
         }
-        expected_offset += GGML_PAD(ggml_row_size(type, ne), alignment);
+        expected_offset += GGML_PAD(ggml_row_size(type, shape[0]) * (ne / shape[0]), alignment);
     }
 
     return ok;
@@ -736,7 +736,7 @@ static bool handcrafted_check_tensor_data(const gguf_context * gguf_ctx, const u
         for (size_t j = 1; j < GGML_MAX_DIMS; ++j) {
             ne *= shape[j];
         }
-        const size_t size = ggml_row_size(type, ne);
+        const size_t size = ggml_row_size(type, shape[0]) * (ne / shape[0]);
 
         const std::string name = "my_tensor_" + std::to_string(i);
         const size_t offset = gguf_get_tensor_offset(gguf_ctx, gguf_find_tensor(gguf_ctx, name.c_str()));

@@ -5525,6 +5525,12 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         return false;
     }
 
+    if (ggml_get_type_traits(type)->row_meta_size > 0) {
+        // ik_llama.cpp row-scaled types: per-row metadata precedes the blocks, so the
+        // byte count is not a multiple of the block size; no per-block validation.
+        return true;
+    }
+
     if (nbytes % ggml_type_size(type) != 0) {
         fprintf(stderr, "%s: invalid size %zu for type %s (type size = %zu)\n", __func__, nbytes, ggml_type_name(type), ggml_type_size(type));
         return false;
