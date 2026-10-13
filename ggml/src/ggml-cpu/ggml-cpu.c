@@ -237,6 +237,12 @@ static void ggml_vec_dot_q5_cr_f32(int n, float * GGML_RESTRICT s, size_t bs,
 static void ggml_vec_dot_q6_cr_f32(int n, float * GGML_RESTRICT s, size_t bs,
                                    const void * GGML_RESTRICT vx, size_t bx,
                                    const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q6_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q6_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q3_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q3_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q2_0s_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q2_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
 static void ggml_vec_dot_tq3_4s_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
                                       const void * GGML_RESTRICT vx, size_t bx,
                                       const void * GGML_RESTRICT vy, size_t by, int nrc);
@@ -487,6 +493,42 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     [GGML_TYPE_TQ3_1S] = {
         .from_float               = (ggml_from_float_t) quantize_row_tq3_1s_ref,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_tq3_1s_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q6_0] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q6_0_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q6_0_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q6_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q6_1_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q6_1_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q3_0] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q3_0_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q3_0_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q3_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q3_1_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q3_1_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q2_0S] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q2_0s_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q2_0s_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q2_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q2_1_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q2_1_q8_0,
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
     },
@@ -4269,6 +4311,38 @@ static void ggml_vec_dot_tq3_1s_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
     GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
 
     ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_TQ3_1S, n, s, vx, vy);
+}
+
+// beellama KV types: reference dequant-dot against q8_0 (no SIMD kernels yet)
+static void ggml_vec_dot_q6_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q6_0, n, s, vx, vy);
+}
+static void ggml_vec_dot_q6_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q6_1, n, s, vx, vy);
+}
+static void ggml_vec_dot_q3_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q3_0, n, s, vx, vy);
+}
+static void ggml_vec_dot_q3_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q3_1, n, s, vx, vy);
+}
+static void ggml_vec_dot_q2_0s_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q2_0S, n, s, vx, vy);
+}
+static void ggml_vec_dot_q2_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q2_1, n, s, vx, vy);
 }
 
 // TQ3_4S vec_dot: dequantize to f32, then dot with q8_0 (reference path).

@@ -1,4 +1,6 @@
 #include "server-context.h"
+#include "server-loop-guard.h"
+#include "reasoning-budget.h"
 #include "server-chat.h"
 #include "server-common.h"
 #include "server-decision.h"
@@ -425,6 +427,10 @@ struct server_batch {
 struct server_slot {
     int id;
 
+    // reasoning loop guard (from Anbeeld/beellama.cpp)
+    server_loop_guard loop_guard;
+    int32_t loop_guard_interventions = 0;
+
     llama_context * ctx_tgt = nullptr;
     llama_context * ctx_dft = nullptr;
 
@@ -565,6 +571,8 @@ struct server_slot {
         spec_is_replay = false;
 
         last_nl_pos    = 0;
+        loop_guard.reset();
+        loop_guard_interventions = 0;
         generated      = {};
         has_new_line   = false;
         truncated      = false;
@@ -1301,6 +1309,15 @@ private:
         }
 
         params_base = params_load;
+
+        if (params_base.reasoning_loop_guard.mode != COMMON_REASONING_LOOP_GUARD_OFF) {
+            try {
+                common_validate_reasoning_loop_guard_params(params_base.reasoning_loop_guard);
+            } catch (const std::exception & e) {
+                SRV_ERR("invalid reasoning loop guard settings: %s\n", e.what());
+                return false;
+            }
+        }
         const auto output_limits = server_output_limits(params_base);
         params_base.n_outputs_max = output_limits.total;
         params_base.n_outputs_max_per_seq = output_limits.per_seq;
@@ -2135,6 +2152,12 @@ private:
 
         // initialize samplers
         if (task.need_sampling()) {
+            slot.loop_guard.configure(params_base.reasoning_loop_guard);
+            slot.loop_guard_interventions = 0;
+            if (params_base.reasoning_loop_guard.mode == COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE) {
+                // the budget sampler is needed to force the end-of-reasoning sequence
+                task.params.sampling.reasoning_control = true;
+            }
             try {
                 slot.smpl.reset(common_sampler_init(model_tgt, task.params.sampling));
             } catch (std::exception & e) {
@@ -2184,6 +2207,38 @@ private:
 
         SLT_INF(slot, "processing task, is_child = %d\n", slot.task->is_child());
         return true;
+    }
+
+    // reasoning loop guard: feed the accepted token, and on a detected loop either force
+    // the end-of-reasoning sequence (force-close, bounded by interventions_max) or stop.
+    void handle_loop_guard(server_slot & slot, llama_token tok) {
+        const int rb_state = common_sampler_reasoning_budget_state(slot.smpl.get());
+        const bool in_reasoning = rb_state == REASONING_BUDGET_COUNTING;
+        const bool forcing      = rb_state == REASONING_BUDGET_FORCING || rb_state == REASONING_BUDGET_WAITING_UTF8;
+        const auto region = in_reasoning ? SERVER_LOOP_REGION_REASONING : SERVER_LOOP_REGION_VISIBLE;
+        const bool is_eog = llama_vocab_is_eog(vocab, tok);
+
+        slot.loop_guard.accept(tok, region);
+        if (!slot.loop_guard.should_check(region, is_eog, forcing)) {
+            return;
+        }
+        const auto check = slot.loop_guard.check(region);
+        if (!check.triggered) {
+            return;
+        }
+        const auto & lg = params_base.reasoning_loop_guard;
+        if (lg.mode == COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE && in_reasoning &&
+                slot.loop_guard_interventions < lg.interventions_max &&
+                common_sampler_reasoning_budget_force(slot.smpl.get())) {
+            slot.loop_guard_interventions++;
+            SLT_WRN(slot, "reasoning loop detected (%s, period=%d, coverage=%d): forcing end of reasoning (%d/%d)\n",
+                    check.kind.c_str(), check.period, check.coverage, slot.loop_guard_interventions, lg.interventions_max);
+            return;
+        }
+        SLT_WRN(slot, "loop detected (%s, period=%d, coverage=%d): stopping generation\n",
+                check.kind.c_str(), check.period, check.coverage);
+        slot.stop           = STOP_TYPE_LIMIT;
+        slot.has_next_token = false;
     }
 
     bool process_token(completion_token_output & result, server_slot & slot) {
@@ -2301,6 +2356,10 @@ private:
 
                 SLT_DBG(slot, "stopped by time limit, n_gen = %d, t_max_predict_ms = %d ms\n", (int) slot.stats.n_gen, (int) slot.task->params.t_max_predict_ms);
             }
+        }
+
+        if (params_base.reasoning_loop_guard.mode != COMMON_REASONING_LOOP_GUARD_OFF && slot.has_next_token) {
+            handle_loop_guard(slot, result.tok);
         }
 
         if (llama_vocab_is_eog(vocab, result.tok)) {
