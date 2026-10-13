@@ -949,7 +949,7 @@ void process_shaders() {
     string_to_spv("cpy_tq4_1s_f32", "copy_from_quant.comp", {{"DATA_A_TQ4_1S", "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
 
     for (auto src : {std::pair{"f32", "float"}, std::pair{"f16", "float16_t"}}) {
-        for (std::string dst : {"f32", "f16", "bf16", "q1_0", "q2_0", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl", "turbo2_0", "turbo3_0", "turbo4_0", "tq4_1s"}) {
+        for (std::string dst : {"f32", "f16", "bf16", "q1_0", "q2_0", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl", "turbo2_0", "turbo3_0", "turbo4_0", "tq4_1s", "q6_0", "q6_1", "q3_0", "q3_1", "q2_0s", "q2_1"}) {
             string_to_spv("set_rows_" + std::string(src.first) + "_" + dst + "_i32", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"S_TYPE", src.second}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
             string_to_spv("set_rows_" + std::string(src.first) + "_" + dst + "_i64", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uvec2"}, {"B_SIZE", "64"}, {"S_TYPE", src.second}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
         }
@@ -1005,6 +1005,12 @@ void process_shaders() {
     // fork weight types without native shaders: dequant-to-f16 only (dequant + f16 matmul)
     string_to_spv("dequant_tq3_4s", "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "1"}, {"D_TYPE", "float16_t"}}));
     string_to_spv("dequant_pq2_0",  "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "2"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("dequant_q6_0", "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "4"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("dequant_q6_1", "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "5"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("dequant_q3_0", "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "6"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("dequant_q3_1", "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "7"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("dequant_q2_0s", "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "8"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("dequant_q2_1", "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "9"}, {"D_TYPE", "float16_t"}}));
     string_to_spv("dequant_ptq1_0", "dequant_forktypes.comp", merge_maps(base_dict, {{"FORK_TYPE", "3"}, {"D_TYPE", "float16_t"}}));
 
     // ik_llama.cpp IQ_K types: dequant-to-f16 only (MUL_MAT runs as dequant + f16 matmul)

@@ -10040,6 +10040,7 @@ static const ggml_type all_types[] = {
     GGML_TYPE_PQ2_0, GGML_TYPE_PTQ1_0,
     GGML_TYPE_IQ2_K, GGML_TYPE_IQ3_K, GGML_TYPE_IQ4_K, GGML_TYPE_IQ5_K, GGML_TYPE_IQ6_K,
     GGML_TYPE_IQ4_KS, GGML_TYPE_IQ2_KS, GGML_TYPE_IQ4_KSS, GGML_TYPE_IQ5_KS, GGML_TYPE_IQ3_KS, GGML_TYPE_IQ2_KL,
+    GGML_TYPE_Q6_0, GGML_TYPE_Q6_1, GGML_TYPE_Q3_0, GGML_TYPE_Q3_1, GGML_TYPE_Q2_0S, GGML_TYPE_Q2_1,
 };
 
 static const ggml_type base_types[] = {
@@ -12337,7 +12338,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                                             for (int nb : { 1, 3, 32, 75, }) {
                                                 for (ggml_prec prec : {GGML_PREC_F32, GGML_PREC_DEFAULT}) {
                                                     if (hsk != 128 && prec == GGML_PREC_DEFAULT) continue;
-                                                    for (ggml_type type_KV : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_Q8_0, GGML_TYPE_Q5_1, GGML_TYPE_Q5_0, GGML_TYPE_Q4_1, GGML_TYPE_Q4_0, GGML_TYPE_IQ4_NL, GGML_TYPE_TURBO3_0, GGML_TYPE_TURBO4_0}) {
+                                                    for (ggml_type type_KV : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_Q8_0, GGML_TYPE_Q5_1, GGML_TYPE_Q5_0, GGML_TYPE_Q4_1, GGML_TYPE_Q4_0, GGML_TYPE_IQ4_NL, GGML_TYPE_TURBO3_0, GGML_TYPE_TURBO4_0,
+                                                                              GGML_TYPE_Q6_0, GGML_TYPE_Q6_1, GGML_TYPE_Q3_0, GGML_TYPE_Q3_1, GGML_TYPE_Q2_0S, GGML_TYPE_Q2_1}) {
                                                         if ((type_KV == GGML_TYPE_TURBO3_0 || type_KV == GGML_TYPE_TURBO4_0) && hsk < 128) continue;
                                                         if (type_KV != GGML_TYPE_F16 && hsk != 64 && hsk != 72 && hsk != 128) continue;
                                                         // DeepSeek MLA: the V cache is a sub-view of the K cache
