@@ -1440,6 +1440,11 @@ json oaicompat_chat_params_parse(
                                json_value(body, "thinking_budget_tokens", -1));
         if (reasoning_budget == -1) {
             reasoning_budget = opt.reasoning_budget;
+            int n_predict = json_value(body, "max_tokens", json_value(body, "max_completion_tokens", json_value(body, "n_predict", -1)));
+            if (n_predict > 0 && reasoning_budget > 0) {
+                int max_reasoning = std::max(64, (int)(n_predict * 0.40));
+                reasoning_budget = std::min(reasoning_budget, max_reasoning);
+            }
         }
 
         if (!out_session.thinking_end_tags().empty()) {
