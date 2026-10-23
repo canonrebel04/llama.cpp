@@ -6659,6 +6659,13 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
     const std::vector<vk_matmul_pipeline_pair>* mmp_map =
         ggml_vk_get_mul_mat_mat_pipeline_map(ctx, src0->type, y_kernel_type, (ggml_prec)dst->op_params[0]);
 
+    // TurboQuant (TQ3_1S/TQ4_1S) matmul pipelines are the ROTATED variant: they are only
+    // correct against an activation pre-rotated by tq_rotate_act, which only
+    // ggml_vk_mul_mat_id_q_f16() does. This path has no rotate, so dequant src0 instead.
+    if (src0->type == GGML_TYPE_TQ3_1S || src0->type == GGML_TYPE_TQ4_1S) {
+        mmp_map = nullptr;
+    }
+
     const bool qx_needs_dequant = mmp_map == nullptr || x_non_contig;
     const bool qy_needs_dequant = y_needs_reformat;
 
