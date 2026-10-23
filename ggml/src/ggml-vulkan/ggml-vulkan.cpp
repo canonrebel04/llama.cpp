@@ -8003,6 +8003,12 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
             ctx->prealloc_y_last_k_padded = false;
         }
     }
+    if (dst->op_params[0] != 0) {
+        // ids may contain -1 ("expert not owned by this pack", hot/cold expert
+        // split). count_experts drops those slots, so the matmul never writes
+        // their dst rows; pre-zero dst so pack outputs merge additively.
+        ggml_vk_buffer_memset_async(subctx, d_D, d_buf_offset, 0, ggml_nbytes(dst));
+    }
     ggml_vk_sync_buffers(ctx, subctx);
 
     const uint64_t x_range = qx_needs_dequant ? x_sz : ggml_nbytes(src0);
