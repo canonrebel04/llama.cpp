@@ -16413,6 +16413,18 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 if (op->type == GGML_TYPE_TQ4_1S && (op->src[0]->ne[0] % 32 != 0)) {
                     return false;
                 }
+                // turbo*/TQ4_1S set_rows pipelines are created with a required subgroup size of 32;
+                // devices that cannot run a 32-wide subgroup (e.g. lavapipe) would hit the
+                // GGML_ASSERT in ggml_vk_create_pipeline_func, so report them unsupported.
+                if (op->type == GGML_TYPE_TURBO2_0 || op->type == GGML_TYPE_TURBO3_0 ||
+                    op->type == GGML_TYPE_TURBO4_0 || op->type == GGML_TYPE_TQ4_1S) {
+                    const bool sg32_ok = device->subgroup_size_control
+                        ? (device->subgroup_min_size <= 32 && 32 <= device->subgroup_max_size)
+                        : device->subgroup_size == 32;
+                    if (!sg32_ok) {
+                        return false;
+                    }
+                }
                 switch (op->type) {
                     case GGML_TYPE_F32:
                     case GGML_TYPE_F16:
