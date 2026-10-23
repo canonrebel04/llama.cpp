@@ -406,7 +406,6 @@ llama_model_deepseek2::graph_mtp::graph_mtp(const llama_model & model, const llm
     cb(cur, "result_output", -1);
 
     res->t_logits = cur;
-    ggml_build_forward_expand(gf, cur);
 }
 
 llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_params & params) :
@@ -661,7 +660,7 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
                 nullptr,
                 model.layers[il].ffn_gate_up_exps,
                 nullptr, nullptr, nullptr,
-                nullptr, &model.layers[il]);
+                nullptr, nullptr, 1e-5f, &model.layers[il]); // selected_experts_in, post_exp_norm, post_exp_norm_eps, moe_cache
             cb(moe_out, "ffn_moe_out", il);
 
             // FFN shared expert
@@ -705,6 +704,4 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
 
     cb(cur, "result_output", -1);
     res->t_logits = cur;
-
-    ggml_build_forward_expand(gf, cur);
 }
