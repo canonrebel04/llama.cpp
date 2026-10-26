@@ -8,14 +8,6 @@
 #include <stdexcept>
 #include <string>
 
-static float dsv4_rope_attn_factor(float freq_scale, float ext_factor) {
-    if (ext_factor == 0.0f) {
-        return 1.0f;
-    }
-
-    return 1.0f / (1.0f + 0.1f*logf(1.0f/freq_scale));
-}
-
 void llama_model_deepseek4::load_arch_hparams(llama_model_loader & ml) {
     if (hparams.n_layer_nextn > 0) {
         const uint32_t n_layer_main = hparams.n_layer_all - hparams.n_layer_nextn;
@@ -356,6 +348,17 @@ ggml_tensor * llama_model_deepseek4::graph::build_hc_pre(
         ggml_tensor ** post,
         ggml_tensor ** comb,
         int il) const {
+    return build_hc_pre(x, build_hc_mixes(x, hc_fn, hc_scale, hc_base, post, comb, il), il);
+}
+
+ggml_tensor * llama_model_deepseek4::graph::build_hc_mixes(
+        ggml_tensor * x,
+        ggml_tensor * hc_fn,
+        ggml_tensor * hc_scale,
+        ggml_tensor * hc_base,
+        ggml_tensor ** post,
+        ggml_tensor ** comb,
+        int il) const {
     const int64_t hc         = hparams.dsv4_hc_mult;
     const int64_t hc_dim     = hc*n_embd;
     const int64_t hc_mix_dim = (2 + hc)*hc;
@@ -402,8 +405,7 @@ ggml_tensor * llama_model_deepseek4::graph::build_hc_pre(
     }
     cb(*comb, "hc_comb", il);
 
-    ggml_tensor * result = build_hc_pre(x, pre, il);
-    return result;
+    return pre;
 }
 
 ggml_tensor * llama_model_deepseek4::graph::build_hc_post(
@@ -682,7 +684,7 @@ ggml_tensor * llama_model_deepseek4::graph::build_top_k_mask(
     GGML_ASSERT(top_k);
 
     if (cparams.fused_top_k_mask) {
-        ggml_tensor * kq_mask_top_k = build_fused_top_k_mask(kq_mask, top_k, nullptr, nullptr, nullptr, il);
+        ggml_tensor * kq_mask_top_k = build_fused_top_k_mask(kq_mask, top_k, nullptr, nullptr, nullptr, nullptr, il);
         cb(kq_mask_top_k, name, il);
 
         return kq_mask_top_k;

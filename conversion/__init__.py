@@ -74,6 +74,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
 
     "DeepseekV4DSparkModel": "deepseek",
 
+    "DeepseekV41ForCausalLM": "deepseek41",
     "DistilBertForMaskedLM": "bert",
     "DistilBertForSequenceClassification": "bert",
     "DistilBertModel": "bert",
@@ -289,6 +290,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "SeedOssForCausalLM": "olmo",
     "SmallThinkerForCausalLM": "smallthinker",
     "SmolLM3ForCausalLM": "llama",
+    "SopranoTextModel": "soprano",
     "Spark2_5ForCausalLM": "spark2_5",
     "SolarOpenForCausalLM": "glm",
     "StableLMEpochForCausalLM": "stablelm",
@@ -328,6 +330,7 @@ MMPROJ_MODEL_MAP: dict[str, str] = {
     "VllmD3Model": "vllm_d3",
     "DeepseekOCR2ForCausalLM": "deepseek",
     "DeepseekOCRForCausalLM": "deepseek",
+    "DeepseekV41ForCausalLM": "deepseek41",
     "DeepseekV4ForCausalLM": "deepseek",
     "Dots3NoteForCausalLM": "dots3",
     "Dots3NoteForConditionalGeneration": "dots3",
@@ -383,6 +386,7 @@ MMPROJ_MODEL_MAP: dict[str, str] = {
     "Qwen3ASRForConditionalGeneration": "qwen3vl",
     "Qwen3OmniMoeForConditionalGeneration": "qwen3vl",
     "PocketTTSModel": "pockettts",
+    "SopranoModel": "soprano",
     "Qwen3TTSForConditionalGeneration": "qwen3tts",
     "Qwen3VLForConditionalGeneration": "qwen3vl",
     "Qwen3VLMoeForConditionalGeneration": "qwen3vl",

@@ -1365,20 +1365,12 @@ struct ggml_tensor_extra_gpu {
 struct ggml_cuda_graph {
 #ifdef USE_CUDA_GRAPH
     ~ggml_cuda_graph() {
-        clear_segments();
-        if (instance != nullptr) {
+        for (cudaGraphExec_t instance : instances) {
             CUDA_CHECK(cudaGraphExecDestroy(instance));
         }
-        if (graph != nullptr) {
-            CUDA_CHECK(cudaGraphDestroy(graph));
-        }
     }
-    cudaGraph_t graph = nullptr;
-    cudaGraphExec_t instance = nullptr;
-    // Optional segmented form (GGML_CUDA_GRAPH_SEG_NODES > 0): the capture is split into several graphs launched
-    // back-to-back, so the GPU starts on the first segment while the host is still launching the rest.
-    std::vector<cudaGraph_t>     seg_graphs;
-    std::vector<cudaGraphExec_t> seg_instances;
+    // the ggml graph is captured as a series of CUDA graphs, so the GPU can run one chunk while the next is enqueued
+    std::vector<cudaGraphExec_t> instances;
     size_t num_nodes = 0;
     std::vector<cudaGraphNode_t> nodes;
     bool disable_due_to_gpu_arch = false;
@@ -1393,18 +1385,6 @@ struct ggml_cuda_graph {
         uint64_t kv_stream_generation;
     };
     std::vector<node_properties> node_props;
-
-    void clear_segments() {
-        for (auto & e : seg_instances) { if (e) { CUDA_CHECK(cudaGraphExecDestroy(e)); } }
-        for (auto & g : seg_graphs)    { if (g) { CUDA_CHECK(cudaGraphDestroy(g)); } }
-        seg_instances.clear();
-        seg_graphs.clear();
-    }
-
-    static int seg_nodes() {
-        static const int n = [] { const char * e = getenv("GGML_CUDA_GRAPH_SEG_NODES"); return e ? atoi(e) : 0; }();
-        return n;
-    }
 
     bool is_enabled() const {
         static const bool disable_cuda_graphs_due_to_env = (getenv("GGML_CUDA_DISABLE_GRAPHS") != nullptr);
@@ -1621,7 +1601,7 @@ struct ggml_backend_cuda_context {
     // Check if any CUDA graph has an instance for this context
     bool any_cuda_graph_has_instance() const {
         for (const auto & [key, graph] : cuda_graphs) {
-            if (graph && graph->instance != nullptr) {
+            if (graph && !graph->instances.empty()) {
                 return true;
             }
         }
