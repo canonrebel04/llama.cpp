@@ -7,7 +7,7 @@ quantization:
 
 | Type               | Enum                       | Size            | Compression vs f16 |
 |--------------------|----------------------------|-----------------|--------------------|
-| `turbo2`           | `GGML_TYPE_TURBO2_0` (43)  | 2 bits/value    | 6.4x               |
+| `turbo2`           | `GGML_TYPE_TURBO2_0` (58)  | 2 bits/value    | 6.4x               |
 | `turbo3`           | `GGML_TYPE_TURBO3_0` (44)  | 3.25 bits/value | 4.9x               |
 | `turbo4`           | `GGML_TYPE_TURBO4_0` (47)  | 4.25 bits/value | 3.8x               |
 

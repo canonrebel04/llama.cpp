@@ -281,10 +281,10 @@ llama_model_glm_dsa::graph::graph(const llama_model & model, const llm_graph_par
                 // rot tensor for DeepSeek DSA archs; GLM-DSA stores indexer K
                 // unrotated, so skip the transform to stay consistent with the
                 // write side)
-                if (inp_attn_dsa->self_k_rot_lid) {
-                    indexer_q = ggml_mul_mat(ctx0, inp_attn_dsa->self_k_rot_lid, indexer_q);
+                if (inp_attn_dsa->self_k_rot_lid[il]) {
+                    indexer_q = ggml_mul_mat(ctx0, inp_attn_dsa->self_k_rot_lid[il], indexer_q);
                     cb(indexer_q, "indexer_q", il);
-                    indexer_k = ggml_mul_mat(ctx0, inp_attn_dsa->self_k_rot_lid, indexer_k);
+                    indexer_k = ggml_mul_mat(ctx0, inp_attn_dsa->self_k_rot_lid[il], indexer_k);
                     cb(indexer_k, "indexer_k", il);
                 }
 

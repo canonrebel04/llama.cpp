@@ -52,12 +52,6 @@ jobs:
             libjpeg-dev build-essential libssl-dev \
             git-lfs
 
-      - name: Toolchain workaround (GCC 14)
-        run: |
-          sudo apt-get install -y gcc-14 g++-14
-          echo "CC=gcc-14" >> "$GITHUB_ENV"
-          echo "CXX=g++-14" >> "$GITHUB_ENV"
-
       - name: Python Dependencies
         id: python_depends
         run: |

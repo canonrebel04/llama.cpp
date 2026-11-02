@@ -42,9 +42,7 @@ layout (push_constant) uniform parameter
 
 #ifdef MUL_MAT_ID
 uint expert_id;
-// id == -1: expert not owned by this pack (hot/cold expert split). Read expert 0
-// (always in bounds) and write a zero row so pack outputs merge additively.
-bool expert_skip;
+bool expert_skip; // an id of -1 skips the slot, the result row is zeroed
 #endif
 
 void get_offsets(out uint a_offset, out uint b_offset, out uint d_offset) {
@@ -66,9 +64,9 @@ void get_offsets(out uint a_offset, out uint b_offset, out uint d_offset) {
         batch_idx_a = i03 * p.ne02 + i02;
     }
 #else
-    const int raw_expert_id = data_ids[expert_i0 + p.expert_i1 * p.nbi1];
-    expert_skip = raw_expert_id < 0;
-    expert_id = expert_skip ? 0u : uint(raw_expert_id);
+    const int expert = data_ids[expert_i0 + p.expert_i1 * p.nbi1];
+    expert_skip = expert == -1;
+    expert_id   = expert_skip ? 0 : uint(expert); // clamp, so that the offsets below stay in range
 #endif
 
     a_offset =
