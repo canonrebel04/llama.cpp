@@ -11,7 +11,7 @@ for the same type is **not** loadable here without remapping.
 | 40 | NVFP4 | upstream | | |
 | 41 | Q1_0 | upstream | | |
 | 42 | Q2_0 | upstream | | |
-| 43 | TURBO2_0 | TheTom turboquant | 32 / 10 | KV cache |
+| 43 | F8_E4M3 | upstream (#27512, OCP FP8 E4M3) | 1 / 1 | weights; upstream took 43 on 2026-10-29, TURBO2_0 moved to 58 |
 | 44 | TURBO3_0 | TheTom turboquant | | KV cache |
 | 45 | TQ3_1S | TheTom/turbo-tan | 32 / 16 | weights |
 | 46 | TQ4_1S | TheTom/turbo-tan | 32 / 20 | weights |
@@ -26,6 +26,7 @@ for the same type is **not** loadable here without remapping.
 | 55 | Q3_1 | Anbeeld/beellama.cpp | 32 / 16 | KV cache; beellama ID 46 |
 | 56 | Q2_0S | Anbeeld/beellama.cpp | 32 / 10 | KV cache (beellama's "q2_0" for KV; upstream Q2_0=42 is a different format); beellama ID 47 |
 | 57 | Q2_1 | Anbeeld/beellama.cpp | 32 / 12 | KV cache; beellama ID 48 |
+| 58 | TURBO2_0 | TheTom turboquant | 32 / 10 | KV cache (runtime-only); **was 43** until the 2026-11-01 sync. Only saved session/state files that recorded the KV type are affected; TheTom's fork still uses 43 |
 
 | 137 | IQ2_K | ikawrakow/ik_llama.cpp | 256 / 76 | weights, 2.375 bpw; **same ID as ik_llama.cpp** |
 | 138 | IQ3_K | ikawrakow/ik_llama.cpp | 256 / 110 | weights, 3.44 bpw; **same ID as ik_llama.cpp** |
@@ -45,13 +46,14 @@ for the same type is **not** loadable here without remapping.
 | 155 | IQ4_KT | ikawrakow/ik_llama.cpp | 256 / 128 + 4 B/row | weights, trellis, 4.0 bpw, row-scaled; **same ID** |
 | 158 | IQ1_KT | ikawrakow/ik_llama.cpp | 256 / 56 + 4 B/row | weights, trellis, 1.75 bpw, row-scaled; **same ID** |
 
-Next free ID: **58** (58-136 free; 137-141 taken by ik_llama.cpp IQ_K types; 142-143 by Prism types; 144-146/152/156/157 by ik row-scaled types; 153-155/158 by ik trellis types; 147-151 reserved for remaining ik types; GGML_TYPE_COUNT is 159). Reserve ranges per branch below and keep them in sync.
+Next free ID: **59** (59-136 free; 137-141 taken by ik_llama.cpp IQ_K types; 142-143 by Prism types; 144-146/152/156/157 by ik row-scaled types; 153-155/158 by ik trellis types; 147-151 reserved for remaining ik types; GGML_TYPE_COUNT is 159). Reserve ranges per branch below and keep them in sync.
 
 ## llama_ftype additions
 
 | ftype | value |
 |-------|-------|
-| MOSTLY_Q8_CR | 42 |
+| MOSTLY_F8_E4M3 | 42 (upstream) |
+| MOSTLY_Q8_CR | 48 (**was 42** until the 2026-11-01 sync; upstream took 42 for F8_E4M3. ftype is informational, so old Q8_CR GGUFs still load but report the F8_E4M3 file type name) |
 | MOSTLY_TQ3_1S | 43 |
 | MOSTLY_TQ4_1S | 44 |
 | MOSTLY_Q5_CR | 45 |
@@ -63,6 +65,16 @@ Next free ID: **58** (58-136 free; 137-141 taken by ik_llama.cpp IQ_K types; 142
 | MOSTLY_IQ2_K .. MOSTLY_IQ6_K | 148-152 (ik_llama.cpp uses 138-142, which collide with the Prism values; ftype is informational only) |
 | MOSTLY_IQ4_KS, IQ2_KS, IQ4_KSS, IQ5_KS, IQ3_KS, IQ2_KL | 153-158 (ik values 137-146 collide with ours/Prism) |
 | MOSTLY_IQ1_KT, IQ2_KT, IQ3_KT, IQ4_KT | 159-162 (ik values 142-147 collide) |
+
+### ggml_ftype (internal only, never stored in files)
+
+`GGML_FTYPE_MOSTLY_F8_E4M3 = 29` is upstream. The fork's ConvRot values moved to
+`GGML_FTYPE_MOSTLY_Q8_CR = 30`, `Q5_CR = 31`, `Q6_CR = 32` in the 2026-11-01 sync.
+
+### Metal function-constant IDs
+
+Upstream took `FC_TOP_K_MASK = 2400`; the fork's TurboQuant constants are now
+`FC_TURBO_WHT = 2500`, `FC_TURBO_FLASH_P1 = 2600`, `FC_TURBO_FLASH_P2 = 2700`.
 
 ## GGUF compatibility / remapping
 

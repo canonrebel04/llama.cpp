@@ -381,6 +381,8 @@ extern "C" {
     GGML_API void        ggml_fp32_to_bf16_row_ref(const float *, ggml_bf16_t *, int64_t);
     GGML_API void        ggml_fp32_to_bf16_row(const float *, ggml_bf16_t *, int64_t);
 
+    typedef struct { uint8_t bits; } ggml_fp8_e4m3_t;
+
     struct ggml_object;
     struct ggml_context;
     struct ggml_cgraph;
@@ -430,7 +432,7 @@ extern "C" {
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
         GGML_TYPE_Q2_0    = 42,
-        GGML_TYPE_TURBO2_0 = 43, // TurboQuant 2-bit KV cache: WHT + 2-bit PolarQuant (runtime-only KV type)
+        GGML_TYPE_F8_E4M3 = 43, // upstream OCP FP8 E4M3
         GGML_TYPE_TURBO3_0 = 44, // TurboQuant 3-bit KV cache: WHT + 3-bit PolarQuant (runtime-only KV type)
         GGML_TYPE_TQ3_1S  = 45, // TurboQuant 3-bit weight: WHT-rotated 8-level Lloyd-Max, block_size=32
         GGML_TYPE_TQ4_1S  = 46, // TurboQuant 4-bit weight: WHT-rotated 16-level Lloyd-Max, block_size=32
@@ -445,6 +447,7 @@ extern "C" {
         GGML_TYPE_Q3_1  = 55, // fork: beellama KV type
         GGML_TYPE_Q2_0S = 56, // fork: beellama KV type
         GGML_TYPE_Q2_1  = 57, // fork: beellama KV type
+        GGML_TYPE_TURBO2_0 = 58, // TurboQuant 2-bit KV cache (runtime-only KV type; was 43 before upstream took 43 for F8_E4M3)
         // ik_llama.cpp IQ_K types: same ids as ik_llama.cpp for GGUF compatibility (see docs/fork-types.md)
         GGML_TYPE_IQ2_K   = 137,
         GGML_TYPE_IQ3_K   = 138,
@@ -520,9 +523,10 @@ extern "C" {
         GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
-        GGML_FTYPE_MOSTLY_Q8_CR   = 29, // except 1d tensors
-        GGML_FTYPE_MOSTLY_Q5_CR   = 30, // except 1d tensors
-        GGML_FTYPE_MOSTLY_Q6_CR   = 31, // except 1d tensors
+        GGML_FTYPE_MOSTLY_F8_E4M3 = 29, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q8_CR   = 30, // except 1d tensors (fork)
+        GGML_FTYPE_MOSTLY_Q5_CR   = 31, // except 1d tensors (fork)
+        GGML_FTYPE_MOSTLY_Q6_CR   = 32, // except 1d tensors (fork)
     };
 
     // available tensor operations:

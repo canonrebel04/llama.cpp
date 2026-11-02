@@ -13,6 +13,7 @@
 
 llama_kv_cache_iswa::llama_kv_cache_iswa(
         const llama_model & model,
+                     bool   no_alloc,
                 ggml_type   type_k,
                 ggml_type   type_v,
                      bool   v_trans,
@@ -22,7 +23,6 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
                  uint32_t   kv_size,
                  uint32_t   n_seq_max,
                  uint32_t   n_ubatch,
-                 uint32_t   n_pad,
            llama_memory_t   mem_other,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse,
@@ -30,14 +30,15 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
                      size_t kv_stream_stage_bytes,
                      void * kv_stream_phase_arena,
                      size_t kv_stream_maximum_pool_bytes) :
-    llama_kv_cache_iswa(model, model.hparams, type_k, type_v, v_trans, offload, swa_full, unified,
-            kv_size, n_seq_max, n_ubatch, n_pad, mem_other, filter, reuse, share,
+    llama_kv_cache_iswa(model, no_alloc, model.hparams, type_k, type_v, v_trans, offload, swa_full, unified,
+            kv_size, n_seq_max, n_ubatch, mem_other, filter, reuse, share,
             kv_stream_stage_bytes, kv_stream_phase_arena, kv_stream_maximum_pool_bytes) {
 }
 
 llama_kv_cache_iswa::llama_kv_cache_iswa(
         const llama_model & model,
-        const llama_hparams & hparams,
+                     bool   no_alloc,
+      const llama_hparams & hparams,
                 ggml_type   type_k,
                 ggml_type   type_v,
                      bool   v_trans,
@@ -47,7 +48,6 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
                  uint32_t   kv_size,
                  uint32_t   n_seq_max,
                  uint32_t   n_ubatch,
-                 uint32_t   n_pad,
            llama_memory_t   mem_other,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse,
@@ -110,8 +110,8 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
     // kv_stream_phase_arena to both here is safe today only because no
     // caller reaches the swa_full branch with streaming enabled yet.
     kv_base = std::make_unique<llama_kv_cache>(
-            model, hparams, type_k, type_v,
-            v_trans, offload, unified, size_base, n_seq_max, n_pad,
+            model, no_alloc, hparams, type_k, type_v,
+            v_trans, offload, unified, size_base, n_seq_max,
             0, LLAMA_SWA_TYPE_NONE, mem_other_base, filter_base, reuse, share,
             "", kv_stream_stage_bytes, kv_stream_phase_arena, kv_stream_maximum_pool_bytes);
 
@@ -119,8 +119,8 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
 
     const bool swa_is_full_length = size_swa == size_base;
     kv_swa = std::make_unique<llama_kv_cache>(
-            model, hparams, type_k, type_v,
-            v_trans, offload, unified, size_swa, n_seq_max, n_pad,
+            model, no_alloc, hparams, type_k, type_v,
+            v_trans, offload, unified, size_swa, n_seq_max,
             hparams.n_swa, hparams.swa_type, mem_other_swa, filter_swa, reuse, share,
             "", swa_is_full_length ? kv_stream_stage_bytes : 0,
             swa_is_full_length ? kv_stream_phase_arena : nullptr,
