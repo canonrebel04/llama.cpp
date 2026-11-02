@@ -321,7 +321,7 @@ llama_kv_cache::llama_kv_cache(
     // llama-bench sweeping --cache-type-v) must not have the first
     // construction's mode silently pin the strategy for every later one.
     const int kv_adaptive_mode = llama_kv_cache_turbo_layer_adaptive_mode(type_v, hparams.n_layer());
-    if (kv_adaptive_mode != 0 && kv_stream_stage_bytes != 0 && !hparams.no_alloc) {
+    if (kv_adaptive_mode != 0 && kv_stream_stage_bytes != 0 && !no_alloc) {
         throw std::runtime_error("block KV streaming (--kv-stream-arena-mib) requires uniform KV types across all layers; TURBO_LAYER_ADAPTIVE is not supported");
     }
 
@@ -407,7 +407,7 @@ llama_kv_cache::llama_kv_cache(
 
             dev_name = ggml_backend_dev_name(dev);
 
-            if (kv_stream_stage_bytes != 0 && !hparams.no_alloc) {
+            if (kv_stream_stage_bytes != 0 && !no_alloc) {
                 if (kv_stream_dev != nullptr && kv_stream_dev != dev) {
                     throw std::runtime_error("block KV streaming requires every attention layer on one CUDA device");
                 }
@@ -905,7 +905,7 @@ void llama_kv_cache::clear(bool data) {
         }
 
         // Re-initialize turbo rotation matrices after buffer clear (clear zeroes everything)
-        if (turbo_rotation != nullptr && turbo_rotation->buffer != nullptr && !model.hparams.no_alloc) {
+        if (turbo_rotation != nullptr && turbo_rotation->buffer != nullptr && !ctxs_bufs.no_alloc) {
             #include "turbo-rotation-data.h"
             ggml_backend_tensor_set(turbo_rotation, TURBO_ROTATION_R, 0, 128 * 128 * sizeof(float));
             ggml_backend_tensor_set(turbo_rotation_inv, TURBO_ROTATION_RT, 0, 128 * 128 * sizeof(float));
