@@ -1,5 +1,8 @@
 # Fork test plan: Vulkan fixes (AMD), plus optional CUDA and Metal
 
+> **Start with [TESTING.md](TESTING.md).** It's the single guide for the whole #62–#88 stack: which PRs need
+> your AMD GPU, the test order, and how to bisect. This file holds the model list, reference numbers and known issues it refers to.
+
 This is for testing the fork's stacked PRs #85, #86 and #87 on real hardware.
 The branch `sync-upstream-20261102` (PR #87) contains everything from #62 through #87.
 
