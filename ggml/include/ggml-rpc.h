@@ -6,9 +6,9 @@
 extern "C" {
 #endif
 
-#define RPC_PROTO_MAJOR_VERSION    8
+#define RPC_PROTO_MAJOR_VERSION    9
 #define RPC_PROTO_MINOR_VERSION    0
-#define RPC_PROTO_PATCH_VERSION    4
+#define RPC_PROTO_PATCH_VERSION    1
 
 #ifdef  __cplusplus
 // 103 = upstream 102 (incl. TOP_K_MASK) + TURBO_WHT
