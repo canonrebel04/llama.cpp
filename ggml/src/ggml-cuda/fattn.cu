@@ -1264,7 +1264,8 @@ bool ggml_cuda_flash_attn_ext_streamed_supported(const ggml_tensor * dst, size_t
     const ggml_tensor * mask = dst->src[3];
     const ggml_tensor * sinks = dst->src[4];
 
-    return Q != nullptr && K != nullptr && V != nullptr &&
+    // K/V row lists (ggml_flash_attn_ext_rows) are not supported by the streamed partial kernels
+    return Q != nullptr && K != nullptr && V != nullptr && dst->src[5] == nullptr &&
         Q->type == GGML_TYPE_F32 &&
         ggml_backend_cuda_kv_stream_get_attention_mode(K->type, V->type) != GGML_BACKEND_CUDA_KV_STREAM_ATTENTION_UNSUPPORTED &&
         Q->ne[0] == KV_STREAM_HEAD_DIM && V->ne[0] == KV_STREAM_HEAD_DIM &&

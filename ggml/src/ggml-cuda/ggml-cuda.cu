@@ -4306,7 +4306,8 @@ bool ggml_backend_cuda_graph_reset(ggml_backend_t backend) {
     CUDA_CHECK(cudaDeviceSynchronize());
 #ifdef USE_CUDA_GRAPH
     cuda_ctx->cuda_graphs.clear();
-    cuda_ctx->last_graph_eviction_sweep = 0;
+    cuda_ctx->next_graph_eviction_time = 0;
+    cuda_ctx->last_graph_use_time      = 0;
 #endif
     cuda_ctx->stream_context().reset();
     return true;

@@ -825,8 +825,9 @@ void ggml_cuda_flash_attn_ext_vec_partial_case_impl(
         (const char *) K->data,
         (const char *) V->data,
         mask ? (const char *) mask->data : nullptr,
-        nullptr,
-        nullptr,
+        nullptr, // sinks
+        nullptr, // KV_max
+        nullptr, // KV_rows: the partial path is not used with kv_rows (see the caller)
         partial_dst,
         partial_meta,
         scale, max_bias, m0, m1, n_head_log2, logit_softcap,
