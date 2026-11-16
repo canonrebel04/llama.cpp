@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 from .base import ModelBase, TextModel, gguf, logger
 
 
-@ModelBase.register("BailingMoeV3Model", "BailingMoeV3ForCausalLM")
+@ModelBase.register("BailingMoeV3Model")
 class BailingHybridModel(TextModel):
     """Ling 3.0 flash (inclusionAI): hybrid KDA + gated MLA MoE, `bailing_hybrid`.
 

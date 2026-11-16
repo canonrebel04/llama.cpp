@@ -72,8 +72,10 @@ static void check_speculative_sequential_splits(
     const uint32_t row_semantics = llama_speculative_grouped_intent_test_access::classify_batch(batch);
     CHECK(row_semantics == GGML_GRAPH_EXECUTION_ROW_SEMANTICS_SEQUENTIAL);
 
+    llama_batch_ext batch_ext(batch.n_tokens, 1, 1, 4, nullptr, vocab.n_tokens(), 1);
+    llama_batch_compat::init(batch_ext, batch);
     llama_batch_allocr balloc(1);
-    CHECK(balloc.init(batch, vocab, nullptr, 1, 4, false));
+    CHECK(balloc.init(batch_ext, vocab, false));
     uint32_t n_rows = 0;
     uint32_t n_ubatches = 0;
     while (true) {
@@ -120,6 +122,40 @@ void test_speculative_grouped_intent_splits() {
     discontinuous.add(0, 12);
     CHECK(llama_speculative_grouped_intent_test_access::classify_batch(discontinuous.batch()) ==
         GGML_GRAPH_EXECUTION_ROW_SEMANTICS_INVALID);
+    // Verification keeps complete spans for flat and equal-sequence packing,
+    // including rotated slot order and a rollback horizon longer than a span.
+    mtp_batch_fixture atomic;
+    atomic.add_span(2, 40, 3);
+    atomic.add_span(0, 70, 3);
+    atomic.add_span(1, 15, 3);
+    llama_vocab vocab;
+    const llama_batch batch = atomic.batch();
+    llama_batch_ext batch_ext(batch.n_tokens, 1, 1, 4, nullptr, vocab.n_tokens(), 1);
+    llama_batch_compat::init(batch_ext, batch);
+    llama_batch_allocr balloc(1);
+    for (int mode = 0; mode < 3; ++mode) {
+        CHECK(balloc.init(batch_ext, vocab, false, 3));
+        uint32_t n_rows = 0;
+        while (true) {
+            const llama_ubatch ubatch = mode == 0 ? balloc.split_simple(5)
+                : mode == 1 ? balloc.split_equal(7, false, 33) : balloc.split_seq(5);
+            if (ubatch.n_tokens == 0) {
+                break;
+            }
+            CHECK(ubatch.n_tokens % 3 == 0);
+            for (uint32_t first = 0; first < ubatch.n_tokens; first += 3) {
+                for (uint32_t row = first; row < first + 3; ++row) {
+                    CHECK(ubatch.n_seq_id[row] == 1);
+                    CHECK(ubatch.seq_id[row][0] == ubatch.seq_id[first][0]);
+                    CHECK(ubatch.pos[row] == ubatch.pos[first] + (llama_pos) (row - first));
+                }
+            }
+            n_rows += ubatch.n_tokens;
+        }
+        CHECK(n_rows == (uint32_t) batch.n_tokens);
+    }
+    CHECK(balloc.init(batch_ext, vocab, false));
+    CHECK(balloc.split_simple(5).n_tokens == 5); // ordinary batches clear the atomic constraint
     fprintf(stderr, "test-moe-cache: speculative intent split lifecycle OK\n");
 }
 

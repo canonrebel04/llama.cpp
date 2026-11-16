@@ -57,14 +57,13 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: "24"
-          # cache: "npm"
-          # cache-dependency-path: "tools/ui/package-lock.json"
-          package-manager-cache: false
+          cache: "npm"
+          cache-dependency-path: "tools/ui/package-lock.json"
 
       - name: Download built UI artifacts
         uses: actions/download-artifact@v6
         with:
-          name: llama-ui.zip
+          name: ui-build
           path: tools/ui/dist/
 
       - name: Install dependencies
@@ -115,9 +114,8 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: "24"
-          # cache: "npm"
-          # cache-dependency-path: "tools/ui/package-lock.json"
-          package-manager-cache: false
+          cache: "npm"
+          cache-dependency-path: "tools/ui/package-lock.json"
 
       - name: Install dependencies
         id: setup
@@ -128,7 +126,7 @@ jobs:
       - name: Download built UI artifacts (reuses ui-build)
         uses: actions/download-artifact@v6
         with:
-          name: llama-ui.zip
+          name: ui-build
           path: tools/ui/dist/
 
       - name: Install Playwright browsers

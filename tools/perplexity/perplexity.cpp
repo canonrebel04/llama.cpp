@@ -106,6 +106,15 @@ static double log_softmax(int n_vocab, const float * logits, uint16_t * log_prob
     return max_logit + log_sum_exp - logits[tok];
 }
 
+// First scored position of a chunk: the second half by default. LLAMA_PPL_SCORE_TAIL=N scores only
+// the last N tokens instead, so a long context can be evaluated at its deep end without buffering
+// logits (and base log-probs) for half the window. Both KLD passes must use the same value.
+static int ppl_first_scored(int n_ctx) {
+    const char * env = getenv("LLAMA_PPL_SCORE_TAIL");
+    const int tail = env ? atoi(env) : 0;
+    return tail > 0 && tail < n_ctx - 1 ? n_ctx - 1 - tail : n_ctx/2;
+}
+
 static void process_logits(
     int n_vocab, const float * logits, const int * tokens, int n_token, std::vector<std::thread> & workers,
     double & nll, double & nll2, float * logit_history, float * prob_history
@@ -366,21 +375,20 @@ static results_perplexity perplexity_v2(llama_context * ctx, const common_params
         // clear the KV cache
         llama_memory_clear(llama_get_memory(ctx), true);
 
-        llama_batch batch = llama_batch_init(n_batch, 0, 1);
+        common_batch batch(ctx);
 
         for (int j = 0; j < num_batches; ++j) {
             const int batch_start = start + j * n_batch;
             const int batch_size  = std::min(end - batch_start, n_batch);
 
-            common_batch_clear(batch);
+            batch.clear();
             for (int i = 0; i < batch_size; i++) {
-                common_batch_add(batch, tokens[batch_start + i], j*n_batch + i, {0}, true);
+                batch.add(tokens[batch_start + i], j*n_batch + i, 0, true);
             }
 
             //LOG_DBG("    Batch %d: starts at %d, size is %d, n_past is %d\n",j,batch_start,batch_size,j * n_batch);
-            if (llama_decode(ctx, batch)) {
+            if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get())) {
                 //LOG_ERR("%s : failed to eval\n", __func__);
-                llama_batch_free(batch);
                 return {tokens, -1, logit_history, prob_history};
             }
 
@@ -400,7 +408,6 @@ static results_perplexity perplexity_v2(llama_context * ctx, const common_params
             }
         }
 
-        llama_batch_free(batch);
 
         const auto t_end = std::chrono::high_resolution_clock::now();
 
@@ -477,8 +484,10 @@ static results_perplexity perplexity(llama_context * ctx, const common_params & 
     auto tim2 = std::chrono::high_resolution_clock::now();
     LOG_INF("%s: tokenization took %g ms\n",__func__,1e-3*std::chrono::duration_cast<std::chrono::microseconds>(tim2-tim1).count());
 
-    if (int(tokens.size()) < 2*n_ctx) {
-        LOG_ERR("%s: you need at least %d tokens to evaluate perplexity with a context of %d\n",__func__,2*n_ctx,
+    const int first = ppl_first_scored(n_ctx);
+    const int min_tokens = first == n_ctx/2 ? 2*n_ctx : n_ctx;
+    if (int(tokens.size()) < min_tokens) {
+        LOG_ERR("%s: you need at least %d tokens to evaluate perplexity with a context of %d\n",__func__,min_tokens,
                 n_ctx);
         LOG_ERR("%s: the data file you provided tokenizes to only %zu tokens\n",__func__,tokens.size());
         return {std::move(tokens), 0., {}, {}};
@@ -507,11 +516,11 @@ static results_perplexity perplexity(llama_context * ctx, const common_params & 
     GGML_ASSERT(n_batch < n_ctx || n_batch % n_ctx == 0);
     GGML_ASSERT(params.n_ctx == n_seq * n_ctx);
 
-    llama_batch batch = llama_batch_init(std::min(n_batch, n_ctx*n_seq), 0, 1);
+    common_batch batch(ctx);
 
     std::vector<float> logits;
     if (num_batches > 1) {
-        logits.reserve(size_t(n_ctx) * n_vocab);
+        logits.reserve(size_t(n_ctx - first) * n_vocab);
     }
 
     LOG_INF("%s: calculating perplexity over %d chunks, n_ctx=%d, batch_size=%d, n_seq=%d\n", __func__, n_chunk, n_ctx, n_batch, n_seq);
@@ -524,7 +533,7 @@ static results_perplexity perplexity(llama_context * ctx, const common_params & 
         logits_stream.write((const char *)&n_chunk, sizeof(n_chunk));
         logits_stream.write((const char *)tokens.data(), n_chunk*n_ctx*sizeof(tokens[0]));
         const int nv = 2*((n_vocab + 1)/2) + 4;
-        log_probs.resize(size_t(n_ctx) * nv);
+        log_probs.resize(size_t(n_ctx - first) * nv);
     }
 
     // We get the logits for all the tokens in the context window (params.n_ctx)
@@ -538,8 +547,7 @@ static results_perplexity perplexity(llama_context * ctx, const common_params & 
     //
     // Example, we have a context window of 512, we will compute perplexity for each of the
     // last 256 tokens.  Then, we split the input up into context window size chunks to
-    // process the entire prompt.
-    const int first = n_ctx/2;
+    // process the entire prompt. (first is computed above, see ppl_first_scored.)
 
     for (int i = 0; i < n_chunk; i += n_seq) {
         const int start =     i * n_ctx;
@@ -558,7 +566,7 @@ static results_perplexity perplexity(llama_context * ctx, const common_params & 
 
             int n_outputs = 0;
 
-            batch.n_tokens = 0;
+            batch.clear();
             for (int seq = 0; seq < n_seq_batch; seq++) {
                 int seq_start = batch_start + seq*n_ctx;
 
@@ -571,22 +579,17 @@ static results_perplexity perplexity(llama_context * ctx, const common_params & 
                 }
 
                 for (int k = 0; k < batch_size; ++k) {
-                    const int idx = seq*n_ctx + k;
-                    batch.token   [idx]    = tokens[seq_start + k];
-                    batch.pos     [idx]    = j*n_batch + k;
-                    batch.n_seq_id[idx]    = 1;
-                    batch.seq_id  [idx][0] = seq;
-                    batch.logits  [idx]    = batch.pos[idx] >= first ? 1 : 0;
-
-                    n_outputs += batch.logits[idx] != 0;
+                    const llama_pos pos = j*n_batch + k;
+                    const bool need_logits = pos >= first;
+                    batch.add(tokens[seq_start + k], pos, seq, need_logits);
+                    n_outputs += need_logits;
                 }
-                batch.n_tokens += batch_size;
 
                 // restore the original token in case it was set to BOS
                 tokens[seq_start] = token_org;
             }
 
-            if (llama_decode(ctx, batch)) {
+            if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get())) {
                 LOG_INF("%s : failed to decode\n", __func__);
                 return {tokens, -1, logit_history, prob_history};
             }
@@ -656,35 +659,24 @@ static results_perplexity perplexity(llama_context * ctx, const common_params & 
         LOG_ERR("Unexpected negative standard deviation of log(prob)\n");
     }
 
-    llama_batch_free(batch);
 
     return {tokens, ppl, logit_history, prob_history};
 }
 
-static bool decode_helper(llama_context * ctx, llama_batch & batch, std::vector<float> & batch_logits, int n_batch, int n_vocab) {
+static bool decode_helper(llama_context * ctx, common_batch & batch, std::vector<float> & batch_logits, int n_batch, int n_vocab) {
     int prev_outputs = 0;
-    for (int i = 0; i < (int) batch.n_tokens; i += n_batch) {
-        const int n_tokens = std::min<int>(n_batch, batch.n_tokens - i);
+    for (int i = 0; i < batch.size(); i += n_batch) {
+        const int n_tokens = std::min<int>(n_batch, batch.size() - i);
 
-        llama_batch batch_view = {
-            n_tokens,
-            batch.token    + i,
-            nullptr,
-            batch.pos      + i,
-            batch.n_seq_id + i,
-            batch.seq_id   + i,
-            batch.logits   + i,
-        };
-
-        const int ret = llama_decode(ctx, batch_view);
+        const int ret = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get_sub_batch(i, n_tokens));
         if (ret != 0) {
             LOG_ERR("failed to decode the batch, n_batch = %d, ret = %d\n", n_batch, ret);
             return false;
         }
 
         int n_outputs = 0;
-        for (int i = 0; i < n_tokens; ++i) {
-            n_outputs += batch_view.logits[i] != 0;
+        for (int j = i; j < i + n_tokens; ++j) {
+            n_outputs += batch.tokens[j].output;
         }
 
         memcpy(batch_logits.data() + size_t(prev_outputs)*n_vocab, llama_get_logits(ctx), size_t(n_outputs)*n_vocab*sizeof(float));
@@ -866,7 +858,7 @@ static void hellaswag_score(llama_context * ctx, const common_params & params) {
     const int max_tasks_per_batch = 32;
     const int max_seq = std::min(4*max_tasks_per_batch, (int) llama_n_seq_max(ctx));
 
-    llama_batch batch = llama_batch_init(n_ctx, 0, 4);
+    common_batch batch(ctx);
 
     std::vector<float> tok_logits(n_vocab);
     // TODO: this could be made smaller; it's currently the worst-case size
@@ -882,7 +874,7 @@ static void hellaswag_score(llama_context * ctx, const common_params & params) {
         size_t i1 = i0;
         size_t i_logits = 0; // this tells us how many logits were needed before this point in the batch
 
-        common_batch_clear(batch);
+        batch.clear();
 
         // batch as much tasks as possible into the available context
         // each task has 4 unique sequence ids - one for each ending
@@ -898,9 +890,9 @@ static void hellaswag_score(llama_context * ctx, const common_params & params) {
             }
 
             for (size_t i = 0; i < hs_cur.common_prefix; ++i) {
-                common_batch_add(batch, hs_cur.seq_tokens[0][i], i, { s0 + 0, s0 + 1, s0 + 2, s0 + 3 }, false);
+                batch.add(hs_cur.seq_tokens[0][i], i, { s0 + 0, s0 + 1, s0 + 2, s0 + 3 }, false);
             }
-            batch.logits[batch.n_tokens - 1] = true; // we need logits for the last token of the common prefix
+            batch.set_output(batch.size() - 1, true); // we need logits for the last token of the common prefix
             n_logits += 1;
 
             for (int s = 0; s < 4; ++s) {
@@ -908,7 +900,7 @@ static void hellaswag_score(llama_context * ctx, const common_params & params) {
                 // TODO: don't evaluate the last token of each sequence
                 for (size_t i = hs_cur.common_prefix; i < seq_tokens_size; ++i) {
                     const bool needs_logits = i < seq_tokens_size - 1;
-                    common_batch_add(batch, hs_cur.seq_tokens[s][i], i, { s0 + s }, needs_logits);
+                    batch.add(hs_cur.seq_tokens[s][i], i, s0 + s, needs_logits);
                     n_logits += needs_logits;
                 }
             }
@@ -1009,7 +1001,6 @@ static void hellaswag_score(llama_context * ctx, const common_params & params) {
         i0 = i1 - 1;
     }
 
-    llama_batch_free(batch);
 
     LOG("\n");
 }
@@ -1164,7 +1155,7 @@ static void winogrande_score(llama_context * ctx, const common_params & params) 
     const int max_tasks_per_batch = 128;
     const int max_seq = std::min(2*max_tasks_per_batch, (int) llama_n_seq_max(ctx));
 
-    llama_batch batch = llama_batch_init(n_ctx, 0, 2);
+    common_batch batch(ctx);
 
     std::vector<float> tok_logits(n_vocab);
     // TODO: this could be made smaller; it's currently the worst-case size
@@ -1183,7 +1174,7 @@ static void winogrande_score(llama_context * ctx, const common_params & params) 
         size_t i1 = i0;
         size_t i_logits = 0;
 
-        common_batch_clear(batch);
+        batch.clear();
 
         while (n_cur + (int) data[i1].required_tokens <= n_ctx) {
             int n_logits = 0;
@@ -1193,15 +1184,15 @@ static void winogrande_score(llama_context * ctx, const common_params & params) 
             }
 
             for (size_t i = 0; i < data[i1].common_prefix; ++i) {
-                common_batch_add(batch, data[i1].seq_tokens[0][i], i, { s0 + 0, s0 + 1 }, false);
+                batch.add(data[i1].seq_tokens[0][i], i, { s0 + 0, s0 + 1 }, false);
             }
-            batch.logits[batch.n_tokens - 1] = true;
+            batch.set_output(batch.size() - 1, true);
             n_logits += 1;
 
             for (int s = 0; s < 2; ++s) {
                 // TODO: end before the last token, no need to predict past the end of the sequences
                 for (size_t i = data[i1].common_prefix; i < data[i1].seq_tokens[s].size(); ++i) {
-                    common_batch_add(batch, data[i1].seq_tokens[s][i], i, { s0 + s }, true);
+                    batch.add(data[i1].seq_tokens[s][i], i, s0 + s, true);
                     n_logits += 1;
                 }
             }
@@ -1518,7 +1509,7 @@ static void multiple_choice_score(llama_context * ctx, const common_params & par
     const int max_tasks_per_batch = 32;
     const int max_seq = std::min(4*max_tasks_per_batch, (int) llama_n_seq_max(ctx));
 
-    llama_batch batch = llama_batch_init(n_ctx, 0, max_seq);
+    common_batch batch(ctx);
 
     std::vector<float> tok_logits(n_vocab);
     std::vector<float> batch_logits(size_t(n_ctx)*n_vocab);
@@ -1538,7 +1529,7 @@ static void multiple_choice_score(llama_context * ctx, const common_params & par
         size_t i1 = i0;
         size_t i_logits = 0; // this tells us how many logits were needed before this point in the batch
 
-        common_batch_clear(batch);
+        batch.clear();
 
         // batch as much tasks as possible into the available context
         // each task has 4 unique sequence ids - one for each ending
@@ -1568,9 +1559,9 @@ static void multiple_choice_score(llama_context * ctx, const common_params & par
 
             for (size_t i = 0; i < cur_task.common_prefix; ++i) {
                 //llama_batch_add(batch, cur_task.seq_tokens[0][i], i, { s0 + 0, s0 + 1, s0 + 2, s0 + 3}, false);
-                common_batch_add(batch, cur_task.seq_tokens[0][i], i, batch_indeces, false);
+                batch.add(cur_task.seq_tokens[0][i], i, batch_indeces, false);
             }
-            batch.logits[batch.n_tokens - 1] = true; // we need logits for the last token of the common prefix
+            batch.set_output(batch.size() - 1, true); // we need logits for the last token of the common prefix
             n_logits += 1;
 
             for (int s = 0; s < int(cur_task.seq_tokens.size()); ++s) {
@@ -1578,7 +1569,7 @@ static void multiple_choice_score(llama_context * ctx, const common_params & par
                 // TODO: don't evaluate the last token of each sequence
                 for (size_t i = cur_task.common_prefix; i < seq_tokens_size; ++i) {
                     const bool needs_logits = i < seq_tokens_size - 1;
-                    common_batch_add(batch, cur_task.seq_tokens[s][i], i, { s0 + s }, needs_logits);
+                    batch.add(cur_task.seq_tokens[s][i], i, s0 + s, needs_logits);
                     n_logits += needs_logits;
                 }
             }
@@ -1677,7 +1668,6 @@ static void multiple_choice_score(llama_context * ctx, const common_params & par
         i0 = i1 - 1;
     }
 
-    llama_batch_free(batch);
 
     if (n_done < 100 && (params.multiple_choice_tasks != 0 && params.multiple_choice_tasks < (size_t)n_task)) return;
 
@@ -1753,14 +1743,15 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
     const bool add_bos = llama_vocab_get_add_bos(vocab);
     GGML_ASSERT(!llama_vocab_get_add_eos(vocab));
 
-    llama_batch batch = llama_batch_init(std::min(n_batch, static_cast<int>(n_ctx)*n_seq), 0, 1);
+    common_batch batch(ctx);
 
-    std::vector<uint16_t> log_probs_uint16(size_t(n_ctx - 1 - n_ctx/2) * nv);
-    std::vector<float>    kld_values(size_t(n_ctx - 1 - n_ctx/2)*n_chunk);
-    std::vector<float> p_diff_values(size_t(n_ctx - 1 - n_ctx/2)*n_chunk);
+    const int first = ppl_first_scored(n_ctx);
+    std::vector<uint16_t> log_probs_uint16(size_t(n_ctx - 1 - first) * nv);
+    std::vector<float>    kld_values(size_t(n_ctx - 1 - first)*n_chunk);
+    std::vector<float> p_diff_values(size_t(n_ctx - 1 - first)*n_chunk);
     std::vector<float> logits;
     if (num_batches > 1) {
-        logits.reserve(size_t(n_ctx) * n_vocab);
+        logits.reserve(size_t(n_ctx - first) * n_vocab);
     }
 
     LOG_INF("%s: computing over %d chunks, n_ctx=%u, batch_size=%d, n_seq=%d\n", __func__, n_chunk, n_ctx, n_batch, n_seq);
@@ -1789,8 +1780,6 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
     auto    kld_ptr =    kld_values.data();
     auto p_diff_ptr = p_diff_values.data();
 
-    const int first = n_ctx/2;
-
     for (int i = 0; i < n_chunk; i += n_seq) {
         const int start =     i * n_ctx;
         const int end   = start + n_ctx;
@@ -1808,7 +1797,7 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
 
             int n_outputs = 0;
 
-            common_batch_clear(batch);
+            batch.clear();
             for (int seq = 0; seq < n_seq_batch; seq++) {
                 int seq_start = batch_start + seq*n_ctx;
 
@@ -1823,7 +1812,7 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
                 for (int k = 0; k < batch_size; ++k) {
                     const int pos = j*n_batch + k;
                     const bool need_logits = pos >= first;
-                    common_batch_add(batch, tokens[seq_start + k], pos, { seq }, need_logits);
+                    batch.add(tokens[seq_start + k], pos, seq, need_logits);
                     n_outputs += need_logits;
                 }
 
@@ -1831,9 +1820,8 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
                 tokens[seq_start] = token_org;
             }
 
-            if (llama_decode(ctx, batch)) {
+            if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get())) {
                 LOG_ERR("%s : failed to decode\n", __func__);
-                llama_batch_free(batch);
                 return;
             }
 
@@ -1862,7 +1850,6 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
         for (int seq = 0; seq < n_seq_batch; seq++) {
             if (in.read((char *)log_probs_uint16.data(), log_probs_uint16.size()*sizeof(uint16_t)).fail()) {
                 LOG_ERR("%s: failed reading log-probs for chunk %d\n", __func__, i + seq);
-                llama_batch_free(batch);
                 return;
             }
 
@@ -1904,7 +1891,6 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
         logits.clear();
     }
 
-    llama_batch_free(batch);
     LOG("\n");
 
     if (kld.count < 100) return; // we do not wish to do statistics on so few values
@@ -2031,7 +2017,7 @@ int llama_perplexity(int argc, char ** argv) {
     if (params.hellaswag || params.winogrande || params.multiple_choice) {
         params.n_parallel = std::max(4, params.n_parallel);
         params.kv_unified = true;
-    } else { // Perplexity & KL divergence
+    } else if (!params.n_parallel_explicit) { // Perplexity & KL divergence
         params.n_parallel = std::max(1, params.n_batch / n_ctx);
     }
     params.n_ctx = params.n_parallel * n_ctx;

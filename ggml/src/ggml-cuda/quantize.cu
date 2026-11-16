@@ -50,6 +50,13 @@ static __device__ __forceinline__ float nvfp4_native_scale_error(
 #endif // CUDART_VERSION >= 12080
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 
+// TQ3_4S weight WHT sign pattern (bit i set => sign -1), matches TQ3_0_SIGNS / TQ_WEIGHT_SIGNS.
+#define GGML_CUDA_TQ3_SIGN_MASK 0x696b4b4au
+static __device__ __forceinline__ float ggml_cuda_tq3_sign(const int i) {
+    return (GGML_CUDA_TQ3_SIGN_MASK >> i) & 1u ? -1.0f : 1.0f;
+}
+
+template <bool tq3_rotate>
 __launch_bounds__(CUDA_QUANTIZE_BLOCK_SIZE, 1)
 static __global__ void quantize_q8_1(
         const float * x_ptr, void * vy_ptr,
@@ -81,17 +88,31 @@ static __global__ void quantize_q8_1(
     const int64_t iqs = i_cont % QK8_1; // quant index
 
     ggml_cuda_pdl_sync();
-    const float xi = i0 < ne00 ? x[i03*s03 + i02*s02 + i01*s01 + i00] : 0.0f;
+    float xi = i0 < ne00 ? x[i03*s03 + i02*s02 + i01*s01 + i00] : 0.0f;
+
+    if constexpr (tq3_rotate) {
+        // Fused TQ3_4S activation rotation (from turbo-tan, charpdev): each q8_1 block is
+        // exactly one 32-point WHT group, so the butterfly runs on the warp lanes that
+        // reduce the block. Applies the forward RHT (sign -> WHT -> 1/sqrt(32)), so
+        // dot(dequant(w), x) == dot(centroids*scale, rotate(x)).
+        float val = xi * ggml_cuda_tq3_sign(iqs);
+#pragma unroll
+        for (int step = 1; step < QK8_1; step <<= 1) {
+            const float other = __shfl_xor_sync(0xFFFFFFFF, val, step, 32);
+            val = (iqs & step) ? (other - val) : (other + val);
+        }
+        xi = val * 0.17677669529663688f;
+    }
     float amax = fabsf(xi);
-    float sum = 0.0f;
 
     amax = warp_reduce_max<QK8_1>(amax);
 
     const float  d = amax / 127.0f;
     const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
 
+    const int sum = warp_reduce_sum<QK8_1>((int) q);
+
     y[ib].qs[iqs] = q;
-    sum = warp_reduce_sum<QK8_1>((float) q);
 
     if (iqs > 0) {
         return;
@@ -130,8 +151,6 @@ static __global__ void quantize_mmq_nvfp4(
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
         const int64_t ne0, const int64_t ne1, const int64_t ne2, const int n_expert_used) {
 #if defined(BLACKWELL_MMA_AVAILABLE)
-
-    const int64_t blocks_per_col = (ne0 + QK_FP4_MMQ - 1) / QK_FP4_MMQ;
 
     int64_t base_idx;
     if constexpr (scatter) {
@@ -326,7 +345,8 @@ static __global__ void quantize_mmq_nvfp4(
                 reinterpret_cast<uint8_t *>(yb->d4)[sub] = fp8_code;
             }
         } else {
-            block_fp4_mmq * yb = y + (blockIdx.y * ((int64_t) blocks_per_col * ne1) + k_block * ne1 + blockIdx.x);
+            const int64_t blocks_per_col = (ne0 + QK_FP4_MMQ - 1) / QK_FP4_MMQ;
+            block_fp4_mmq * yb = y + (blockIdx.y * (blocks_per_col * ne1) + k_block * ne1 + blockIdx.x);
             uint32_t * yqs = reinterpret_cast<uint32_t *>(yb->qs);
             yqs[2 * sub + 0] = q0;
             yqs[2 * sub + 1] = q1;
@@ -519,17 +539,6 @@ static __global__ void quantize_mmq_q8_1(
         amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, offset, WARP_SIZE));
     }
 
-    float sum;
-    if (ds_layout != MMQ_Q8_1_DS_LAYOUT_D4) {
-        sum = xi.x + xi.y + xi.z + xi.w;
-
-        // Calculate sums across vals_per_sum/4 threads.
-#pragma unroll
-        for (int offset = vals_per_sum/8; offset > 0; offset >>= 1) {
-            sum += __shfl_xor_sync(0xFFFFFFFF, sum, offset, WARP_SIZE);
-        }
-    }
-
     const float d_inv = 127.0f / amax;
     char4 q;
     q.x = roundf(xi.x*d_inv);
@@ -537,6 +546,19 @@ static __global__ void quantize_mmq_q8_1(
     q.z = roundf(xi.z*d_inv);
     q.w = roundf(xi.w*d_inv);
     const float d = 1.0f / d_inv;
+
+    float sum = 0.0f;
+    if (ds_layout != MMQ_Q8_1_DS_LAYOUT_D4) {
+        int sum_q = int(q.x) + int(q.y) + int(q.z) + int(q.w);
+
+        // Calculate sums across vals_per_sum/4 threads.
+#pragma unroll
+        for (int offset = vals_per_sum/8; offset > 0; offset >>= 1) {
+            sum_q += __shfl_xor_sync(0xFFFFFFFF, sum_q, offset, WARP_SIZE);
+        }
+
+        sum = d * float(sum_q);
+    }
 
     // write the block once (normal) or to each of the token's compact rows (scatter)
     const int nwrite = scatter ? n_expert_used : 1;
@@ -589,8 +611,11 @@ void quantize_row_q8_1_cuda(
     const dim3 num_blocks(block_num_x, ne1, ne2*ne3);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE, 1, 1);
     const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(num_blocks, block_size, 0, stream);
-    ggml_cuda_kernel_launch(quantize_q8_1, launch_params, x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
-    GGML_UNUSED(type_src0);
+    if (type_src0 == GGML_TYPE_TQ3_4S) {
+        ggml_cuda_kernel_launch(quantize_q8_1<true>, launch_params, x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
+    } else {
+        ggml_cuda_kernel_launch(quantize_q8_1<false>, launch_params, x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
+    }
 }
 
 void quantize_mmq_q8_1_cuda(
@@ -619,7 +644,6 @@ void quantize_mmq_q8_1_cuda(
             break;
         default:
             GGML_ABORT("fatal error");
-            break;
     }
 }
 
@@ -649,7 +673,6 @@ void quantize_scatter_mmq_q8_1_cuda(
             break;
         default:
             GGML_ABORT("fatal error");
-            break;
     }
 }
 

@@ -560,7 +560,7 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("  --no-warmup                                 skip warmup runs before benchmarking\n");
     printf("  --n-gen-warmup <n>                         generation tokens to run before timing (default: %d)\n", cmd_params_defaults.n_gen_warmup);
     printf("  -fitt, --fit-target <MiB>                   fit model to device memory with this margin per device in MiB (default: off)\n");
-    printf("  -fitc, --fit-ctx <n>                        minimum ctx size for --fit-target (default: 4096)\n");
+    printf("  -fitc, --fit-ctx <n>                        minimum ctx size for --fit-target (default: 0)\n");
     if (llama_supports_rpc()) {
         printf("  -rpc, --rpc <rpc_servers>                   register RPC devices (comma separated)\n");
     }
@@ -666,6 +666,9 @@ static ggml_type ggml_type_from_name(const std::string & s) {
     }
     if (s == "tq4_1s") {
         return GGML_TYPE_TQ4_1S;
+    }
+    if (s == "tq3_4s") {
+        return GGML_TYPE_TQ3_4S;
     }
 
     return GGML_TYPE_COUNT;
@@ -1318,7 +1321,7 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
             p.hf_token      = params.hf_token;
             p.offline       = params.offline;
             p.model.hf_repo = params.hf_repo[i];
-            if (!params.hf_file.empty() && !params.hf_file[i].empty()) {
+            if (i < params.hf_file.size() && !params.hf_file[i].empty()) {
                 p.model.hf_file = params.hf_file[i];
             }
 
@@ -1853,10 +1856,10 @@ struct test {
         moe_cache      = inst.moe_cache;
         moe_cache_fit  = cache_fit_selected;
         repack         = mparams.use_extra_bufts;
-        split_mode     = inst.split_mode;
-        load_mode      = inst.load_mode;
+        split_mode     = mparams.split_mode;
+        load_mode      = mparams.load_mode;
         lazy_mode      = inst.lazy_mode;
-        main_gpu       = inst.main_gpu;
+        main_gpu       = mparams.main_gpu;
         no_kv_offload  = inst.no_kv_offload;
         kv_cpu_pinned  = inst.kv_cpu_pinned;
         recurrent_state_offload = inst.recurrent_state_offload;
@@ -2645,7 +2648,8 @@ static bool test_prompt(llama_context * ctx, int n_prompt, int n_batch, int n_th
         for (int i = 1; i < n_tokens; i++) {
             tokens[i] = bench_random_token(seed, n_vocab);
         }
-        int res = llama_decode(ctx, llama_batch_get_one(tokens.data(), n_tokens));
+        common_batch batch = common_batch_get_one(ctx, tokens.data(), n_tokens);
+        int res = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
         if (res != 0) {
             fprintf(stderr, "%s: failed to decode prompt batch, res = %d\n", __func__, res);
             return false;
@@ -2666,8 +2670,13 @@ static bool test_gen(llama_context * ctx, int n_gen, int n_threads, uint64_t see
 
     llama_token token = llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab) : bench_random_token(seed, n_vocab);
 
+    common_batch batch(ctx);
+    llama_pos pos = llama_memory_seq_pos_max(llama_get_memory(ctx), 0) + 1;
+
     for (int i = 0; i < n_gen; i++) {
-        int res = llama_decode(ctx, llama_batch_get_one(&token, 1));
+        batch.clear();
+        batch.add(token, pos++, 0, true);
+        int res = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
         if (res != 0) {
             fprintf(stderr, "%s: failed to decode generation batch, res = %d\n", __func__, res);
             return false;
@@ -2807,7 +2816,8 @@ int llama_bench(int argc, char ** argv) {
 
             std::vector<size_t> margins(llama_max_devices(), inst.fit_target * 1024 * 1024);
 
-            uint32_t n_ctx_needed = inst.n_prompt + std::max(inst.n_gen + inst.n_depth, inst.n_gen_warmup);
+            // fit at least the requested minimum context size, not just the tokens the benchmark processes
+            uint32_t n_ctx_needed = std::max<uint32_t>(inst.n_prompt + std::max(inst.n_gen + inst.n_depth, inst.n_gen_warmup), inst.fit_min_ctx);
             cparams.n_ctx = std::max(cparams.n_ctx, n_ctx_needed);
             common_moe_cache_params fit_moe_cache = common_moe_cache_from_bench_mode(inst.moe_cache);
 

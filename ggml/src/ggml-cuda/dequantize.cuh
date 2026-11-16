@@ -44,6 +44,16 @@ static __device__ __forceinline__ void dequantize_q2_0(const void * vx, const in
     v.y = (c1 - 1) * d;
 }
 
+// PQ2_0 / PTQ1_0 (from PrismML llama.cpp fork)
+static __device__ __forceinline__ void dequantize_ptq1_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_ptq1_0 * x = (const block_ptq1_0 *) vx;
+
+    const float d = x[ib].d;
+
+    v.x = ptq1_0_trit(&x[ib], iqs + 0) * d;
+    v.y = ptq1_0_trit(&x[ib], iqs + 1) * d;
+}
+
 static __device__ __forceinline__ void dequantize_pq2_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_pq2_0 * x = (const block_pq2_0 *) vx;
 
@@ -62,6 +72,7 @@ static __device__ __forceinline__ void dequantize_pq2_0(const void * vx, const i
     v.x = (c0 - 1) * d;
     v.y = (c1 - 1) * d;
 }
+
 
 static __device__ __forceinline__ void dequantize_q4_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_q4_0 * x = (const block_q4_0 *) vx;
@@ -528,6 +539,40 @@ static __device__ __forceinline__ void dequantize_tq4_1s(const void * vx, const 
     v.y = buf[iqs + 1];
 }
 
+// TQ3_4S (turbo-tan): 4 x E3M5 per-8 scales + 3-bit indices, inverse WHT.
+static __device__ __forceinline__ float tq3_4s_decode_scale_dev(uint8_t b) {
+    return b == 0 ? 0.0f : ldexpf(1.0f + (float)(b & 31) / 32.0f, (b >> 5) - 9);
+}
+static __device__ __forceinline__ void dequantize_tq3_4s(const void * vx, const int64_t ib, const int iqs, float2 & v) {
+    const block_tq3_4s * x = (const block_tq3_4s *) vx;
+    float buf[32];
+    for (int g = 0; g < 4; g++) {
+        const float d = tq3_4s_decode_scale_dev(x[ib].d[g]);
+        const uint8_t * qp = x[ib].qs + g * 3;
+        uint8_t idx[8];
+        idx[0] =  qp[0]       & 7;
+        idx[1] = (qp[0] >> 3) & 7;
+        idx[2] = ((qp[0] >> 6) | (qp[1] << 2)) & 7;
+        idx[3] = (qp[1] >> 1) & 7;
+        idx[4] = (qp[1] >> 4) & 7;
+        idx[5] = ((qp[1] >> 7) | (qp[2] << 1)) & 7;
+        idx[6] = (qp[2] >> 2) & 7;
+        idx[7] = (qp[2] >> 5) & 7;
+        for (int i = 0; i < 8; i++) buf[g * 8 + i] = TQ3_CENTROIDS_WEIGHT[idx[i]] * d;
+    }
+    for (int step = 1; step < 32; step <<= 1) {
+        for (int i = 0; i < 32; i += step << 1) {
+            for (int j = i; j < i + step; j++) {
+                float a = buf[j], b = buf[j + step];
+                buf[j] = a + b; buf[j + step] = a - b;
+            }
+        }
+    }
+    const float inv_sqrt32 = 0.17677669529663688f;
+    v.x = buf[iqs]     * inv_sqrt32 * TQ_WEIGHT_SIGNS[iqs];
+    v.y = buf[iqs + 1] * inv_sqrt32 * TQ_WEIGHT_SIGNS[iqs + 1];
+}
+
 // TQ3_1S: 3-bit weight type with inverse WHT, block size 32, dual half-block scales
 // 3-bit packing: 4 groups of 8 indices in 3 bytes each (24 bits = 8 * 3-bit)
 static __device__ __forceinline__ void dequantize_tq3_1s(const void * vx, const int64_t ib, const int iqs, float2 & v) {
@@ -571,3 +616,120 @@ static __device__ __forceinline__ void dequantize_tq3_1s(const void * vx, const 
     v.x = buf[iqs];
     v.y = buf[iqs + 1];
 }
+
+// ik_llama.cpp IQ_K types (IQ2_K .. IQ6_K), ported from ik_llama.cpp (Iwan Kawrakow, MIT).
+// Element-wise decoders: with qk = QK_K and qr = 1, v.x/v.y are elements iqs and iqs+1 of
+// super-block ib, matching the scalar CPU dequantize_row_iqN_k in ggml-iqk-quants.cpp.
+// Only the dequantize/get_rows paths are provided (mul_mat goes through dequant + cuBLAS).
+
+static __device__ __forceinline__ float iqk_iq2_k_elem(const block_iq2_k * x, const int j) {
+    const int ib32 = j / 32, w = j % 32, half = w / 16;
+    const float dl = __half2float(x->d) * (((x->scales[ib32] >> 4*half) & 0xf) - 8);
+    const int8_t * values = iq2nl_values + 4*((x->extra >> (2*ib32 + half)) & 1);
+    const uint8_t q = x->qs[(ib32/4)*32 + half*16 + w%16];
+    return dl * values[(q >> 2*(ib32%4)) & 3];
+}
+
+static __device__ __forceinline__ float iqk_iq3_k_elem(const block_iq3_k * x, const int j) {
+    const int ib32 = j / 32, w = j % 32, half = w / 16;
+    const int sign = (x->scales_h >> (2*ib32 + half)) & 1;
+    const float dl = __half2float(x->d) * ((2*((x->scales_l[ib32] >> 4*half) & 0xf) + 1) * (sign ? -1 : 1));
+    const int8_t * values = iq3nl_values + 8*((x->extra >> (2*ib32 + half)) & 1);
+    const int iw = half*16 + w%16;
+    const uint8_t ql = x->qs[(ib32/4)*32 + iw];
+    const uint8_t qh = x->qh[iw];
+    return dl * values[((ql >> 2*(ib32%4)) & 3) | (((qh >> (ib32%8)) & 1) << 2)];
+}
+
+static __device__ __forceinline__ float iqk_iq4_k_elem(const block_iq4_k * x, const int j) {
+    const int ib = j / 32, w = j % 32, half = w / 16;
+    const int sh = x->scales_h[ib/2] >> 4*(ib%2);
+    const int ls = (((x->scales_l[ib] >> 4*half) & 0xf) | (((sh >> 2*half) & 3) << 4)) - 32;
+    const int8_t * values = iq4k_values + 16*((x->extra >> (2*ib + half)) & 1);
+    const uint8_t q = x->qs[ib*16 + w%16];
+    return __half2float(x->d) * ls * values[(q >> 4*half) & 0xf];
+}
+
+static __device__ __forceinline__ float iqk_iq5_k_elem(const block_iq5_k * x, const int j) {
+    const int ib64 = j / 64, w = j % 64, part = w / 16;
+    const int ls = (((x->scales_l[2*ib64 + (part >> 1)] >> 4*(part & 1)) & 0xf) | (((x->scales_h[ib64] >> 2*part) & 3) << 4)) - 32;
+    const int8_t * values = iq5nl_values + 32*((x->extra >> (4*ib64 + part)) & 1);
+    const int iw = (part & 1)*16 + w%16;
+    const uint8_t ql = x->qs[ib64*32 + iw];
+    const uint8_t qh = x->qh[iw];
+    const int shift = 2*(ib64 % 4) + (part >> 1);
+    return __half2float(x->d) * ls * values[((ql >> 4*(part >> 1)) & 0xf) | (((qh >> shift) & 1) << 4)];
+}
+
+static __device__ __forceinline__ float iqk_iq6_k_elem(const block_iq6_k * x, const int j) {
+    const int ib64 = j / 64, w = j % 64, part = w / 16;
+    const float dl = __half2float(x->d) * x->scales[4*ib64 + part];
+    const float m  = (x->extra >> (4*ib64 + part)) & 1 ? 1.0f : 0.0f;
+    const int iw = (part & 1)*16 + w%16;
+    const uint8_t ql = x->qs[ib64*32 + iw];
+    const uint8_t qh = x->qh[(ib64/2)*32 + iw];
+    const int shift = 4*(ib64 % 2) + 2*(part >> 1);
+    const float q = ((ql >> 4*(part >> 1)) & 0xf) | (((qh >> shift) & 3) << 4);
+    return dl * (-127.f + q*(6.2568f + q*(-0.11218f + q*0.0011972f)) + m);
+}
+
+#define IQK_DEFINE_DEQUANT(T) \
+static __device__ __forceinline__ void dequantize_##T(const void * vx, const int64_t ib, const int iqs, float2 & v) { \
+    const block_##T * x = (const block_##T *) vx + ib; \
+    v.x = iqk_##T##_elem(x, iqs + 0); \
+    v.y = iqk_##T##_elem(x, iqs + 1); \
+}
+IQK_DEFINE_DEQUANT(iq2_k)
+IQK_DEFINE_DEQUANT(iq3_k)
+IQK_DEFINE_DEQUANT(iq4_k)
+IQK_DEFINE_DEQUANT(iq5_k)
+IQK_DEFINE_DEQUANT(iq6_k)
+#undef IQK_DEFINE_DEQUANT
+
+// beellama KV-cache types (Anbeeld/beellama.cpp): element-wise decoders for qk = 32, qr = 1.
+// They mirror dequantize_row_q{6_0,6_1,3_0,3_1,2_0s,2_1} in ggml-quants.c.
+static __device__ __forceinline__ float bee_q6_0_elem(const block_q6_0 * x, const int j) {
+    const int jj = j % 16, hi = j / 16;
+    const int h = (x->qh[jj % 8] >> (4*(jj / 8))) & 0x0F;
+    const int q = hi ? ((x->qs[jj] >> 4) | ((h & 0x0C) << 2)) : ((x->qs[jj] & 0x0F) | ((h & 0x03) << 4));
+    return (q - 32) * __half2float(x->d);
+}
+static __device__ __forceinline__ float bee_q6_1_elem(const block_q6_1 * x, const int j) {
+    const int jj = j % 16, hi = j / 16;
+    const int h = (x->qh[jj % 8] >> (4*(jj / 8))) & 0x0F;
+    const int q = hi ? ((x->qs[jj] >> 4) | ((h & 0x0C) << 2)) : ((x->qs[jj] & 0x0F) | ((h & 0x03) << 4));
+    const float2 dm = __half22float2(x->dm);
+    return q * dm.x + dm.y;
+}
+static __device__ __forceinline__ int bee_q3_q(const uint8_t * qs, const uint8_t * qhb, const int j) {
+    const uint32_t qh = qhb[0] | (qhb[1] << 8) | (qhb[2] << 16) | ((uint32_t) qhb[3] << 24);
+    return ((qs[j % 8] >> (2*(j / 8))) & 0x03) | (((qh >> j) & 1) << 2);
+}
+static __device__ __forceinline__ float bee_q3_0_elem(const block_q3_0 * x, const int j) {
+    return (bee_q3_q(x->qs, x->qh, j) - 4) * __half2float(x->d);
+}
+static __device__ __forceinline__ float bee_q3_1_elem(const block_q3_1 * x, const int j) {
+    const float2 dm = __half22float2(x->dm);
+    return bee_q3_q(x->qs, x->qh, j) * dm.x + dm.y;
+}
+static __device__ __forceinline__ float bee_q2_0s_elem(const block_q2_0s * x, const int j) {
+    return (((x->qs[j % 8] >> (2*(j / 8))) & 0x03) - 2) * __half2float(x->d);
+}
+static __device__ __forceinline__ float bee_q2_1_elem(const block_q2_1 * x, const int j) {
+    const float2 dm = __half22float2(x->dm);
+    return ((x->qs[j % 8] >> (2*(j / 8))) & 0x03) * dm.x + dm.y;
+}
+
+#define BEE_DEFINE_DEQUANT(T) \
+static __device__ __forceinline__ void dequantize_##T(const void * vx, const int64_t ib, const int iqs, float2 & v) { \
+    const block_##T * x = (const block_##T *) vx + ib; \
+    v.x = bee_##T##_elem(x, iqs + 0); \
+    v.y = bee_##T##_elem(x, iqs + 1); \
+}
+BEE_DEFINE_DEQUANT(q6_0)
+BEE_DEFINE_DEQUANT(q6_1)
+BEE_DEFINE_DEQUANT(q3_0)
+BEE_DEFINE_DEQUANT(q3_1)
+BEE_DEFINE_DEQUANT(q2_0s)
+BEE_DEFINE_DEQUANT(q2_1)
+#undef BEE_DEFINE_DEQUANT

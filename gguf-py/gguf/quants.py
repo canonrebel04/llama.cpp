@@ -5,7 +5,7 @@ from math import log2, ceil
 
 from numpy.typing import DTypeLike
 
-from .constants import GGML_QUANT_SIZES, GGMLQuantizationType, QK_K
+from .constants import GGML_QUANT_SIZES, GGML_ROW_META_SIZES, GGMLQuantizationType, QK_K
 from .lazy import LazyNumpyTensor
 
 import numpy as np
@@ -15,14 +15,15 @@ def quant_shape_to_byte_shape(shape: Sequence[int], quant_type: GGMLQuantization
     block_size, type_size = GGML_QUANT_SIZES[quant_type]
     if shape[-1] % block_size != 0:
         raise ValueError(f"Quantized tensor row size ({shape[-1]}) is not a multiple of {quant_type.name} block size ({block_size})")
-    return (*shape[:-1], shape[-1] // block_size * type_size)
+    return (*shape[:-1], GGML_ROW_META_SIZES.get(quant_type, 0) + shape[-1] // block_size * type_size)
 
 
 def quant_shape_from_byte_shape(shape: Sequence[int], quant_type: GGMLQuantizationType) -> tuple[int, ...]:
     block_size, type_size = GGML_QUANT_SIZES[quant_type]
-    if shape[-1] % type_size != 0:
+    meta = GGML_ROW_META_SIZES.get(quant_type, 0)
+    if shape[-1] < meta or (shape[-1] - meta) % type_size != 0:
         raise ValueError(f"Quantized tensor bytes per row ({shape[-1]}) is not a multiple of {quant_type.name} type size ({type_size})")
-    return (*shape[:-1], shape[-1] // type_size * block_size)
+    return (*shape[:-1], (shape[-1] - meta) // type_size * block_size)
 
 
 # This is faster than np.vectorize and np.apply_along_axis because it works on more than one row at a time
@@ -37,7 +38,11 @@ def _apply_over_grouped_rows(func: Callable[[np.ndarray], np.ndarray], arr: np.n
 # round away from zero (matches C roundf)
 # Optimization: using trunc and copysign is ~4x faster than abs/floor/sign
 def np_roundf(n: np.ndarray) -> np.ndarray:
-    return np.trunc(n + np.copysign(0.5, n))
+    # np.abs, not abs(): numpy < 2.3 on Python 3.14 can write abs() in place into n when the caller passes a temporary (numpy/numpy#28681), dropping the sign
+    a = np.abs(n)
+    floored = np.floor(a)
+    b = floored + np.floor(2 * (a - floored))
+    return np.sign(n) * b
 
 
 class QuantError(Exception): ...
@@ -715,6 +720,59 @@ class TQ2_0(__Quant, qtype=GGMLQuantizationType.TQ2_0):
         return (d * qs.astype(np.float32))
 
 
+class Q1_0(__Quant, qtype=GGMLQuantizationType.Q1_0):
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        # sequential sum like the C reference, np.sum uses pairwise summation and can round differently
+        d = np.cumsum(abs(blocks), axis=-1, dtype=np.float32)[..., -1:] / np.float32(cls.block_size)
+        qs = np.packbits(blocks >= 0, axis=-1, bitorder="little")
+
+        d = d.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([d, qs], axis=-1)
+
+    @classmethod
+    def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        d, qs = np.hsplit(blocks, [2])
+
+        d = d.view(np.float16).astype(np.float32)
+
+        qs = np.unpackbits(qs, axis=-1, bitorder="little")
+
+        return np.where(qs != 0, d, -d)
+
+
+class Q2_0(__Quant, qtype=GGMLQuantizationType.Q2_0):
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        d = abs(blocks).max(axis=-1, keepdims=True)
+        with np.errstate(divide="ignore"):
+            id = np.where(d == 0, 0, 1 / d)
+        qs = (np_roundf(blocks * id) + 1).clip(0, 3).astype(np.uint8)
+
+        qs = qs.reshape((n_blocks, -1, 4)) << np.array([0, 2, 4, 6], dtype=np.uint8)
+        qs = qs[..., 0] | qs[..., 1] | qs[..., 2] | qs[..., 3]
+
+        d = d.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([d, qs], axis=-1)
+
+    @classmethod
+    def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        d, qs = np.hsplit(blocks, [2])
+
+        d = d.view(np.float16).astype(np.float32)
+
+        qs = qs.reshape((n_blocks, -1, 1)) >> np.array([0, 2, 4, 6], dtype=np.uint8)
+        qs = (qs & 0x03).reshape((n_blocks, -1)).astype(np.int8) - np.int8(1)
+
+        return (d * qs.astype(np.float32))
+
+
 class MXFP4(__Quant, qtype=GGMLQuantizationType.MXFP4):
     # e2m1 values (doubled)
     # ref: https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
@@ -823,6 +881,23 @@ class NVFP4(__Quant, qtype=GGMLQuantizationType.NVFP4):
         vals = np.take_along_axis(kvalues, vals, axis=-1)
 
         return (d * vals.astype(np.float32)).reshape(n_super, 64)
+
+
+class F8_E4M3(__Quant, qtype=GGMLQuantizationType.F8_E4M3):
+    @classmethod
+    def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        bits = blocks.astype(np.uint8)
+        sign = np.where(bits & 0x80, np.float32(-1.0), np.float32(1.0))
+        magnitude = bits & 0x7F
+        exponent = magnitude >> 3
+        mantissa = magnitude & 0x07
+        values = np.where(
+            exponent == 0,
+            np.ldexp(mantissa.astype(np.float32), -9),
+            np.ldexp(1.0 + mantissa.astype(np.float32) / 8.0, exponent.astype(np.int32) - 7),
+        )
+        values = np.where(magnitude == 0x7F, np.nan, sign * values)
+        return values.astype(np.float32, copy=False)
 
 
 class IQ2_XXS(__Quant, qtype=GGMLQuantizationType.IQ2_XXS):

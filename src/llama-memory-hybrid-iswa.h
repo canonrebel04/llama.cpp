@@ -20,6 +20,7 @@ class llama_memory_hybrid_iswa : public llama_memory_i {
 public:
     llama_memory_hybrid_iswa(
         const llama_model & model,
+                      bool   no_alloc,
                             /* attn */
                 ggml_type   type_k,
                 ggml_type   type_v,
@@ -27,7 +28,6 @@ public:
                      bool   swa_full,
                  uint32_t   kv_size,
                  uint32_t   n_ubatch,
-                 uint32_t   n_pad,
                      bool   offload_attn,
  llama_memory_placement_options placement,
                             /* recurrent */
@@ -40,7 +40,10 @@ public:
                      bool   unified,
                             /* layer filters */
     const layer_filter_cb & filter_attn = nullptr,
-    const layer_filter_cb & filter_recr = nullptr);
+    const layer_filter_cb & filter_recr = nullptr,
+                     size_t kv_stream_stage_bytes = 0,
+                     void * kv_stream_phase_arena = nullptr,
+                     size_t kv_stream_maximum_pool_bytes = 0);
 
     ~llama_memory_hybrid_iswa() = default;
 
@@ -80,6 +83,9 @@ public:
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0)       override;
+
+    bool has_kv_stream_targets() const override;
+    std::vector<llama_kv_stream_target> get_kv_stream_targets() const override;
 
     //
     // llama_memory_hybrid_iswa specific API
@@ -130,6 +136,9 @@ public:
     llama_memory_status  get_status() const override;
     const llama_ubatch & get_ubatch() const override;
     uint32_t get_attn_reserve_n_kv() const override;
+
+    bool has_kv_stream_targets() const override;
+    std::vector<llama_kv_stream_active_target> get_kv_stream_active_targets() const override;
 
     //
     // llama_memory_hybrid_iswa_context

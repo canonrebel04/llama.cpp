@@ -328,6 +328,54 @@ static void ggml_cuda_get_rows_switch_src0_type(
             get_rows_cuda_q<QK_PQ2_0, QR_PQ2_0, dequantize_pq2_0>(src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
             break;
+        case GGML_TYPE_PTQ1_0:
+            get_rows_cuda_q<QK_PTQ1_0, QR_PTQ1_0, dequantize_ptq1_0>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_Q6_0:
+            get_rows_cuda_q<QK6_0, 1, dequantize_q6_0>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_Q6_1:
+            get_rows_cuda_q<QK6_1, 1, dequantize_q6_1>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_Q3_0:
+            get_rows_cuda_q<QK3_0, 1, dequantize_q3_0>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_Q3_1:
+            get_rows_cuda_q<QK3_1, 1, dequantize_q3_1>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_Q2_0S:
+            get_rows_cuda_q<QK2_0S, 1, dequantize_q2_0s>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_Q2_1:
+            get_rows_cuda_q<QK2_1, 1, dequantize_q2_1>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_IQ2_K:
+            get_rows_cuda_q<QK_K, 1, dequantize_iq2_k>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_IQ3_K:
+            get_rows_cuda_q<QK_K, 1, dequantize_iq3_k>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_IQ4_K:
+            get_rows_cuda_q<QK_K, 1, dequantize_iq4_k>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_IQ5_K:
+            get_rows_cuda_q<QK_K, 1, dequantize_iq5_k>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_IQ6_K:
+            get_rows_cuda_q<QK_K, 1, dequantize_iq6_k>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
         case GGML_TYPE_Q4_0:
             get_rows_cuda_q<QK4_0, QR4_0, dequantize_q4_0>(src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
@@ -418,9 +466,13 @@ static void ggml_cuda_get_rows_switch_src0_type(
             get_rows_cuda_q<QK_TQ3_0, QR_TQ3_1S, dequantize_tq3_1s>(src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
             break;
+        case GGML_TYPE_TQ3_4S:
+            // TurboQuant TQ3_4S: per-pair dequant (QR=1 -> 2 consecutive elements), mirrors convert.cu.
+            get_rows_cuda_q<QK_TQ3_0, QR_TQ3_1S, dequantize_tq3_4s>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
         default:
             GGML_ABORT("%s: unsupported src0 type: %s\n", __func__, ggml_type_name(src0_type));
-            break;
     }
 }
 
@@ -449,7 +501,6 @@ void get_rows_cuda(
             break;
         default:
             GGML_ABORT("%s: unsupported dst type: %s\n", __func__, ggml_type_name(dst_type));
-            break;
     }
 }
 

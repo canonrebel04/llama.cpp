@@ -389,9 +389,11 @@ ggml_backend_buffer_type_t ggml_backend_cuda_moe_cached_buffer_type(void) {
         /* .iface    = */ {
             /* .get_name         = */ ggml_backend_cuda_moe_cached_buffer_type_name,
             /* .alloc_buffer     = */ ggml_backend_cuda_moe_cached_buffer_type_alloc_buffer,
+            /* .alloc_buffer_n   = */ NULL, // defaults to alloc_buffer + linear allocator
             /* .get_alignment    = */ ggml_backend_cpu_buffer_type()->iface.get_alignment,
             /* .get_max_size     = */ NULL, // defaults to SIZE_MAX
             /* .get_alloc_size   = */ ggml_backend_cpu_buffer_type()->iface.get_alloc_size,
+            /* .get_alloc_size_n = */ NULL, // defaults to per-tensor get_alloc_size
             /* .is_host          = */ ggml_backend_cuda_moe_cached_buffer_type_is_host,
         },
         /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_cuda_reg(), 0),

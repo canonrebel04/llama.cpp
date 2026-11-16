@@ -381,6 +381,8 @@ extern "C" {
     GGML_API void        ggml_fp32_to_bf16_row_ref(const float *, ggml_bf16_t *, int64_t);
     GGML_API void        ggml_fp32_to_bf16_row(const float *, ggml_bf16_t *, int64_t);
 
+    typedef struct { uint8_t bits; } ggml_fp8_e4m3_t;
+
     struct ggml_object;
     struct ggml_context;
     struct ggml_cgraph;
@@ -471,7 +473,7 @@ extern "C" {
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
         GGML_TYPE_Q2_0    = 42,
-        GGML_TYPE_TURBO2_0 = 43, // TurboQuant 2-bit KV cache: WHT + 2-bit PolarQuant (runtime-only KV type)
+        GGML_TYPE_F8_E4M3 = 43, // upstream OCP FP8 E4M3
         GGML_TYPE_TURBO3_0 = 44, // TurboQuant 3-bit KV cache: WHT + 3-bit PolarQuant (runtime-only KV type)
         GGML_TYPE_TQ3_1S  = 45, // TurboQuant 3-bit weight: WHT-rotated 8-level Lloyd-Max, block_size=32
         GGML_TYPE_TQ4_1S  = 46, // TurboQuant 4-bit weight: WHT-rotated 16-level Lloyd-Max, block_size=32
@@ -479,11 +481,34 @@ extern "C" {
         GGML_TYPE_Q8_CR   = 48, // Q8_0 blocks of a ConvRot-rotated tensor
         GGML_TYPE_Q5_CR   = 49, // Q5_0 blocks of a ConvRot-rotated tensor
         GGML_TYPE_Q6_CR   = 50, // Q6_K blocks of a ConvRot-rotated tensor
-        // Prism-private Q2_0 at group size 128 (upstream Q2_0 is group 64). Same 2-bit codec,
-        // one fp16 scale per 128 weights. High id so it slots above both upstream types and
-        // the fork's custom region (43..50); type_traits is sized to COUNT.
-        GGML_TYPE_PQ2_0   = 142,
-        GGML_TYPE_COUNT   = 143,
+        GGML_TYPE_TQ3_4S  = 51, // fork: TQ3_4S (turbo-tan id 46 remapped, see docs/fork-types.md)
+        GGML_TYPE_Q6_0  = 52, // fork: beellama KV type
+        GGML_TYPE_Q6_1  = 53, // fork: beellama KV type
+        GGML_TYPE_Q3_0  = 54, // fork: beellama KV type
+        GGML_TYPE_Q3_1  = 55, // fork: beellama KV type
+        GGML_TYPE_Q2_0S = 56, // fork: beellama KV type
+        GGML_TYPE_Q2_1  = 57, // fork: beellama KV type
+        GGML_TYPE_TURBO2_0 = 58, // TurboQuant 2-bit KV cache (runtime-only KV type; was 43 before upstream took 43 for F8_E4M3)
+        // ik_llama.cpp IQ_K types: same ids as ik_llama.cpp for GGUF compatibility (see docs/fork-types.md)
+        GGML_TYPE_IQ2_K   = 137,
+        GGML_TYPE_IQ3_K   = 138,
+        GGML_TYPE_IQ4_K   = 139,
+        GGML_TYPE_IQ5_K   = 140,
+        GGML_TYPE_IQ6_K   = 141,
+        // Prism ternary types: same ids as PrismML's fork for GGUF compatibility (see docs/fork-types.md)
+        GGML_TYPE_PQ2_0   = 142, // Prism group-128 Q2_0
+        GGML_TYPE_PTQ1_0  = 143, // Prism group-128 ternary
+        GGML_TYPE_IQ4_KS  = 144, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_IQ2_KS  = 145, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_IQ4_KSS = 146, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_IQ5_KS  = 152, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_IQ3_KS  = 156, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_IQ2_KL  = 157, // ik_llama.cpp row-scaled type, same id
+        GGML_TYPE_IQ2_KT  = 153, // ik_llama.cpp trellis type, same id
+        GGML_TYPE_IQ3_KT  = 154, // ik_llama.cpp trellis type, same id
+        GGML_TYPE_IQ4_KT  = 155, // ik_llama.cpp trellis type, same id
+        GGML_TYPE_IQ1_KT  = 158, // ik_llama.cpp trellis type, same id
+        GGML_TYPE_COUNT   = 159,
     };
 
     // [TAG_GGML_PREC]
@@ -539,9 +564,10 @@ extern "C" {
         GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
-        GGML_FTYPE_MOSTLY_Q8_CR   = 29, // except 1d tensors
-        GGML_FTYPE_MOSTLY_Q5_CR   = 30, // except 1d tensors
-        GGML_FTYPE_MOSTLY_Q6_CR   = 31, // except 1d tensors
+        GGML_FTYPE_MOSTLY_F8_E4M3 = 29, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q8_CR   = 30, // except 1d tensors (fork)
+        GGML_FTYPE_MOSTLY_Q5_CR   = 31, // except 1d tensors (fork)
+        GGML_FTYPE_MOSTLY_Q6_CR   = 32, // except 1d tensors (fork)
         GGML_FTYPE_MOSTLY_PQ2_0   = 128, // GGML_TYPE_PQ2_0, except 1d tensors (Prism-private group-128 Q2_0)
     };
 
@@ -643,6 +669,7 @@ extern "C" {
         GGML_OP_DSV4_HC_COMB,
         GGML_OP_DSV4_HC_PRE,
         GGML_OP_DSV4_HC_POST,
+        GGML_OP_TOP_K_MASK,
 
         GGML_OP_UNARY,
 
@@ -984,6 +1011,7 @@ extern "C" {
             enum   ggml_type      type);
 
     // dst[i0, i1, i2] = a[i0, i1, i2] + b[i0, ids[i1, i2]]
+    // an id of -1 adds nothing: dst[i0, i1, i2] = a[i0, i1, i2]
     GGML_API struct ggml_tensor * ggml_add_id(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
@@ -1535,6 +1563,16 @@ extern "C" {
             enum ggml_prec       prec,
             int                  idx);
 
+    // [TAG_GGML_PREC]
+    // get the accumulator / src[idx] precision set by the functions above
+    // return GGML_PREC_UNDEFINED when the op does not carry the requested precision
+    GGML_API enum ggml_prec ggml_prec_get_acc(
+            const struct ggml_tensor * a);
+
+    GGML_API enum ggml_prec ggml_prec_get_src(
+            const struct ggml_tensor * a,
+            int                        idx);
+
     // A: k columns, n rows => [ne03, ne02, n, k]
     // B: k columns, m rows  (i.e. we transpose it internally) => [ne03 * x, ne02 * y, m, k]
     // result is n columns, m rows => [ne03 * x, ne02 * y, m, n]
@@ -1556,6 +1594,15 @@ extern "C" {
             enum ggml_op_hint    hint);
 
     // indirect matrix multiplication
+    // an id of -1 skips the slot and zeroes the matching row of the result
+    //
+    // [TAG_MUL_MAT_ID_DUPLICATE_ID]
+    // note: this op has undefined behaviour if a given `a` is referenced more than once for a given `b`
+    //       (i.e. duplicate experts per token are not guaranteed to be supported in all backends)
+    // TODO: add backend support: https://github.com/ggml-org/llama.cpp/pull/29998#issuecomment-6153742533
+    // the CPU backend skips negative ids, their rows of the result are zero
+    // MUL_MAT_ID op-parameter index for the advisory negative-ID dispatch annotation.
+    #define GGML_MUL_MAT_ID_SKIP_IDS_PARAM 4
     GGML_API struct ggml_tensor * ggml_mul_mat_id(
             struct ggml_context * ctx,
             struct ggml_tensor  * as,
@@ -2071,10 +2118,6 @@ extern "C" {
             float                 beta_slow),
         "use ggml_rope_ext_inplace instead");
 
-    // compute correction dims for YaRN RoPE scaling
-    GGML_API void ggml_rope_yarn_corr_dims(
-        int n_dims, int n_ctx_orig, float freq_base, float beta_fast, float beta_slow, float dims[2]);
-
     // rotary position embedding backward, i.e compute dx from dy
     // a - dy
     GGML_API struct ggml_tensor * ggml_rope_ext_back(
@@ -2116,6 +2159,11 @@ extern "C" {
     GGML_API struct ggml_tensor * ggml_rope_set_offset(
             struct ggml_tensor  * a,
             int                   n_offs);
+
+    // control rounding of YaRN correction bounds (default: true)
+    GGML_API struct ggml_tensor * ggml_rope_set_truncate(
+            struct ggml_tensor * a,
+            bool                 truncate);
 
     // im2col
     // converts data into a format that effectively results in a convolution when combined with matrix multiplication
@@ -2554,6 +2602,24 @@ extern "C" {
             float                 max_bias,
             float                 logit_softcap);
 
+    // same as ggml_flash_attn_ext, but each q slice attends to its own list of K/V rows
+    // q:       [n_embd_k, n_batch, n_head,    ne3]
+    // k:       [n_embd_k, n_rows,  n_head_kv, 1  ] shared by all q slices
+    // v:       [n_embd_v, n_rows,  n_head_kv, 1  ]
+    // mask:    [n_kv,     n_batch, ne32,      ne3]
+    // kv_rows: [n_kv,     ne3] I32, mask column i of slice i3 uses row kv_rows[i, i3] of k and v
+    // negative rows are padding, their mask entries must be -inf
+    GGML_API struct ggml_tensor * ggml_flash_attn_ext_rows(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * mask,
+            struct ggml_tensor  * kv_rows,
+            float                 scale,
+            float                 max_bias,
+            float                 logit_softcap);
+
     GGML_DEPRECATED(GGML_API void ggml_flash_attn_ext_set_prec(
             struct ggml_tensor * a,
             enum ggml_prec       prec),
@@ -2786,9 +2852,7 @@ extern "C" {
             struct ggml_tensor  * x,
             struct ggml_tensor  * weights);
 
-    // hc_post: x [n_embd, n_tokens], residual [n_embd, hc, n_tokens], post [hc, n_tokens], comb [dst_hc, src_hc, n_tokens]
-    //          -> [n_embd, hc, n_tokens]
-    //   result[i, h, t] = x[i, t] * post[h, t] + sum_src residual[i, src, t] * comb[h, src, t]
+
     // hc_pre with a per-element gate (Qwen3.8-Flash-Next): gate [n_embd, hc, n_tokens]
     //   result[i, t] = scale*sum_h x[i, h, t]*sigmoid(gate[i, h, t])
     //
@@ -2810,6 +2874,26 @@ extern "C" {
             struct ggml_tensor  * residual,
             struct ggml_tensor  * post,
             struct ggml_tensor  * comb);
+
+    // top-k sparse attention mask: keep the mask cells of the live picks and the extra cells, set the rest to -inf
+    //
+    // mask:   [n_kv,    m1,  m2,  m3]  f16 or f32, broadcast to the rows of top_k
+    // top_k:  [n_top,   ne1, ne2, ne3] i32, picks of each row
+    // score:  [n_pick,  ne1, ne2, ne3] f32, can be NULL: a pick is live when its score is above -inf, else every pick is live
+    // blocks: [n_blk,   n_pick]        i32, can be NULL: the member cells of each pick, else a pick is a cell
+    // extra:  [n_extra, ne1, ne2, ne3] i32, can be NULL: cells of each row kept without a pick
+    // res:    [n_kv,    ne1, ne2, ne3] same type as mask
+    //
+    // res[c, i] = mask[c, i % m] when c is a cell of a live pick of row i or an extra cell of row i, else -inf
+    // picks and cells out of range are skipped
+    //
+    GGML_API struct ggml_tensor * ggml_top_k_mask(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * mask,
+            struct ggml_tensor  * top_k,
+            struct ggml_tensor  * score,
+            struct ggml_tensor  * blocks,
+            struct ggml_tensor  * extra);
 
     // custom operators
 
@@ -3066,6 +3150,7 @@ extern "C" {
         bool                     is_quantized;
         ggml_to_float_t          to_float;
         ggml_from_float_t        from_float_ref;
+        size_t                   row_meta_size; // fork: bytes of per-row metadata (ik_llama.cpp row-scaled types) before the blocks
     };
 
     GGML_API const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type);

@@ -437,6 +437,137 @@ static void set_rows_sycl_turbo2(ggml_backend_sycl_context & ctx,
     GGML_UNUSED(ne13);
     GGML_UNUSED(nb00);
     GGML_UNUSED(nb13);
+template<typename blockType>
+using quantize_row_qk_t = void (*)(const float *, blockType *, int64_t);
+
+using quantize_rows_f_t = size_t (*)(const float *, void *, int64_t, int64_t, const float *);
+
+template <typename TIn, typename TIdx, typename blockType, int qk, quantize_row_qk_t<blockType> quantize_row>
+static void set_rows_sycl_qk_host(
+        const ggml_tensor * src0,
+        const ggml_tensor * src1,
+        ggml_tensor * dst,
+        const int64_t ne00,
+        const int64_t ne01,
+        const int64_t ne02,
+        const int64_t ne03,
+        const int64_t ne11,
+        const int64_t ne12,
+        const size_t nb01,
+        const size_t nb02,
+        const size_t nb03,
+        const size_t nb10,
+        const size_t nb11,
+        const size_t nb12,
+        const size_t nb1,
+        const size_t nb2,
+        const size_t nb3,
+        queue_ptr stream) {
+    GGML_ASSERT(ne00 % qk == 0);
+
+    const size_t src0_bytes = ggml_nbytes(src0);
+    const size_t src1_bytes = ggml_nbytes(src1);
+
+    std::vector<char> src0_host(src0_bytes);
+    std::vector<char> src1_host(src1_bytes);
+
+    stream->memcpy(src0_host.data(), src0->data, src0_bytes);
+    stream->memcpy(src1_host.data(), src1->data, src1_bytes);
+    stream->wait();
+
+    std::vector<float> src_row_f32(ne00);
+    const int64_t nblocks = ne00 / qk;
+    std::vector<blockType> dst_row_q(nblocks);
+
+    for (int64_t i03 = 0; i03 < ne03; ++i03) {
+        for (int64_t i02 = 0; i02 < ne02; ++i02) {
+            for (int64_t i01 = 0; i01 < ne01; ++i01) {
+                const int64_t i12 = i03 % ne12;
+                const int64_t i11 = i02 % ne11;
+                const int64_t i10 = i01;
+
+                const size_t src1_offset = calculate_offset<3>({ nb10, nb11, nb12 }, { i10, i11, i12 });
+                const int64_t dst_row = *(const TIdx *) (src1_host.data() + src1_offset);
+
+                const size_t src0_row_offset = calculate_offset<3>({ nb01, nb02, nb03 }, { i01, i02, i03 });
+                const TIn * src_row = reinterpret_cast<const TIn *>(src0_host.data() + src0_row_offset);
+
+                for (int64_t i00 = 0; i00 < ne00; ++i00) {
+                    src_row_f32[i00] = (float) src_row[i00];
+                }
+
+                quantize_row(src_row_f32.data(), dst_row_q.data(), ne00);
+
+                const size_t dst_offset = calculate_offset<3>({ nb1, nb2, nb3 }, { dst_row, i02, i03 });
+                stream->memcpy((char *) dst->data + dst_offset, dst_row_q.data(), nblocks * sizeof(blockType));
+                stream->wait();
+            }
+        }
+    }
+}
+
+template <typename TIn, typename TIdx, typename blockType, int qk, quantize_rows_f_t quantize_rows>
+static void set_rows_sycl_iq_host(
+        const ggml_tensor * src0,
+        const ggml_tensor * src1,
+        ggml_tensor * dst,
+        const int64_t ne00,
+        const int64_t ne01,
+        const int64_t ne02,
+        const int64_t ne03,
+        const int64_t ne11,
+        const int64_t ne12,
+        const size_t nb01,
+        const size_t nb02,
+        const size_t nb03,
+        const size_t nb10,
+        const size_t nb11,
+        const size_t nb12,
+        const size_t nb1,
+        const size_t nb2,
+        const size_t nb3,
+        queue_ptr stream) {
+    GGML_ASSERT(ne00 % qk == 0);
+
+    const size_t src0_bytes = ggml_nbytes(src0);
+    const size_t src1_bytes = ggml_nbytes(src1);
+
+    std::vector<char> src0_host(src0_bytes);
+    std::vector<char> src1_host(src1_bytes);
+
+    stream->memcpy(src0_host.data(), src0->data, src0_bytes);
+    stream->memcpy(src1_host.data(), src1->data, src1_bytes);
+    stream->wait();
+
+    std::vector<float> src_row_f32(ne00);
+    const int64_t nblocks = ne00 / qk;
+    std::vector<blockType> dst_row_q(nblocks);
+
+    for (int64_t i03 = 0; i03 < ne03; ++i03) {
+        for (int64_t i02 = 0; i02 < ne02; ++i02) {
+            for (int64_t i01 = 0; i01 < ne01; ++i01) {
+                const int64_t i12 = i03 % ne12;
+                const int64_t i11 = i02 % ne11;
+                const int64_t i10 = i01;
+
+                const size_t src1_offset = calculate_offset<3>({ nb10, nb11, nb12 }, { i10, i11, i12 });
+                const int64_t dst_row = *(const TIdx *) (src1_host.data() + src1_offset);
+
+                const size_t src0_row_offset = calculate_offset<3>({ nb01, nb02, nb03 }, { i01, i02, i03 });
+                const TIn * src_row = reinterpret_cast<const TIn *>(src0_host.data() + src0_row_offset);
+
+                for (int64_t i00 = 0; i00 < ne00; ++i00) {
+                    src_row_f32[i00] = (float) src_row[i00];
+                }
+
+                quantize_rows(src_row_f32.data(), dst_row_q.data(), 1, ne00, nullptr);
+
+                const size_t dst_offset = calculate_offset<3>({ nb1, nb2, nb3 }, { dst_row, i02, i03 });
+                stream->memcpy((char *) dst->data + dst_offset, dst_row_q.data(), nblocks * sizeof(blockType));
+                stream->wait();
+            }
+        }
+    }
 }
 
 template<typename TIn, typename TIdx, typename TOut>
@@ -604,8 +735,8 @@ void ggml_sycl_op_set_rows(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
 
-    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32);
-    GGML_ASSERT(dst->src[0]->nb[0] == sizeof(float));
+    GGML_ASSERT(dst->src[0]->type == GGML_TYPE_F32 || dst->src[0]->type == GGML_TYPE_F16);
+    GGML_ASSERT(dst->src[0]->nb[0] == ggml_type_size(dst->src[0]->type));
     GGML_ASSERT(dst->src[1]->type == GGML_TYPE_I64 || dst->src[1]->type == GGML_TYPE_I32);
 
     if (src1->type == GGML_TYPE_I64) {

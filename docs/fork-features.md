@@ -42,6 +42,21 @@ The fork resolves MoE buffer operations, cache statistics and typed expert manif
 
 The llama runtime publishes complete V2 candidate snapshots and refreshes them after LoRA changes. Rejected, incomplete or unknown snapshots are ineligible for grouped execution. Snapshot arrays are borrowed for the call; tensor pointers in an accepted snapshot remain valid until replacement. Buffers and active cache resources retain the bounded host-budget owner.
 
+## TurboQuant CUDA correctness checks
+
+Rebuild the CUDA library as well as the server after changing attention kernels. A healthy server process does not prove that its loaded libraries match the source tree. Deploy the executable and shared libraries from the same build; avoid loading libraries copied from another checkout.
+
+From the repository root:
+
+```sh
+cmake --build build --target llama-server test-backend-ops -j 4
+LD_LIBRARY_PATH="$PWD/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    ./build/bin/test-backend-ops test -b CUDA0 -o FLASH_ATTN_TURBO
+```
+
+The deterministic cases cover 128- and 256-element heads, 8:1 grouped-query attention, Turbo2/3/4, decode and prefill shapes, masks, partial KV tails, and mixed value-cache types. They compare CUDA with the CPU reference on the same quantized inputs. They do not certify model quality at a particular cache precision; also check representative model responses and long-context retrieval before changing a serving profile.
+
+
 ## Generic fork helpers
 
 - Graph execution certificates: `ggml_graph_execution_certificate` describes MAIN, DRAFT, or MTP ownership and independent, sequential, or speculative row semantics. Pass it with `ggml_backend_sched_graph_compute_ext()` or `ggml_backend_sched_graph_compute_async_ext()`. Invalid or absent certificates run as ordinary uncertified graphs. The scheduler stamps source and split graph IDs only for each backend compute callback; a backend must validate and copy needed fields synchronously and must not retain the certificate address. Existing scheduler compute APIs are unchanged. The llama runtime automatically certifies eligible independent decode batches.

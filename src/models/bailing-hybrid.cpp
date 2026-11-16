@@ -69,7 +69,7 @@ void llama_model_bailing_hybrid::load_arch_hparams(llama_model_loader & ml) {
         hparams.is_recr_impl[i] = hparams.n_head_kv(i) == 0;
     }
 
-    ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all);
+    ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all, true);
     ml.get_key(LLM_KV_EXPERT_SHARED_COUNT,        hparams.n_expert_shared);
     ml.get_key(LLM_KV_LEADING_DENSE_BLOCK_COUNT,  hparams.n_layer_dense_lead, false);
     ml.get_key(LLM_KV_EXPERT_WEIGHTS_SCALE,       hparams.expert_weights_scale, false);
@@ -215,7 +215,7 @@ void llama_model_bailing_hybrid::load_arch_tensors(llama_model_loader &) {
 }
 
 std::unique_ptr<llm_graph_context> llama_model_bailing_hybrid::build_arch_graph(const llm_graph_params & params) const {
-    return std::make_unique<graph>(*this, params);
+    return std::make_unique<graph>(params);
 }
 
 // Causal conv1d over Q/K/V. Copied from kimi-linear.cpp -- qkv selects which of
@@ -256,8 +256,8 @@ static ggml_tensor * causal_conv1d(ggml_cgraph * gf, ggml_context * ctx0, ggml_t
     return ggml_reshape_4d(ctx0, Xcur, head_dim, n_head, n_seq_tokens, n_seqs);
 }
 
-llama_model_bailing_hybrid::graph::graph(const llama_model & model, const llm_graph_params & params) :
-    llm_build_delta_net_base(params), model(model) {
+llama_model_bailing_hybrid::graph::graph(const llm_graph_params & params) :
+    llm_build_delta_net_base(params) {
     ggml_tensor * cur;
     ggml_tensor * inpL;
 

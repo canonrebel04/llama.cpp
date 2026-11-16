@@ -1,0 +1,177 @@
+#version 450
+
+// Dequantize the ik_llama.cpp row-scaled IQ_KS types to D_TYPE for the generic
+// dequant -> f16 matmul path. Each row starts with a per-row scale (float or half,
+// "row meta") followed by the 256-element blocks, so addressing is row-aware and the
+// buffer is read as bytes. Mirrors dequantize_row_* in ggml-iqk-quants-ks.cpp.
+// IQKS_TYPE 1: IQ4_KS  (f32 meta, 136 B)    2: IQ2_KS (f16 meta, 70 B)
+//           3: IQ4_KSS (f32 meta, 128 B)    4: IQ5_KS (f32 meta, 168 B)
+//           5: IQ3_KS  (f16 meta, 102 B)    6: IQ2_KL (f16 meta, 86 B)
+// One invocation decodes one block.
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_8bit_storage : require
+
+layout (push_constant) uniform parameter
+{
+    uint M;
+    uint K;
+    uint stride_a;
+    uint stride_b;
+    uint nel;
+} p;
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#if IQKS_TYPE == 1
+#define META 4
+#define BS 136
+#elif IQKS_TYPE == 2
+#define META 2
+#define BS 70
+#elif IQKS_TYPE == 3
+#define META 4
+#define BS 128
+#elif IQKS_TYPE == 4
+#define META 4
+#define BS 168
+#elif IQKS_TYPE == 5
+#define META 2
+#define BS 102
+#elif IQKS_TYPE == 6
+#define META 2
+#define BS 86
+#endif
+
+layout (binding = 0) readonly buffer A {uint8_t data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
+
+const int iq2nl[8]  = { -31, -13, 1, 17, -26, -8, 6, 22 };
+const int iq3nl[16] = { -63, -40, -23, -10, 1, 13, 28, 47, -59, -36, -19, -6, 5, 17, 32, 51 };
+const int iq4k[32]  = { -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+                        -123, -100, -79, -61, -45, -31, -18, -6, 5, 17, 29, 42, 57, 73, 93, 117 };
+const int iq5nl[64] = { -126, -114, -103, -92, -83, -74, -65, -57, -50, -43, -36, -30, -24, -18, -12, -6, -1, 5, 11, 17, 23, 29, 36, 43, 51, 59, 68, 77, 87, 97, 109, 121,
+                        -124, -112, -101, -90, -81, -72, -63, -55, -48, -41, -34, -28, -22, -16, -10, -4, 1, 7, 13, 19, 25, 31, 38, 45, 53, 61, 70, 79, 89, 99, 111, 123 };
+const uint iq2kl[32] = { 0xe9c1, 0x0dc1, 0xc1d8, 0xf6d8, 0x0dd8, 0x2fd8, 0xd8e9, 0xe9e9, 0x01e9, 0x0de9, 0x1ce9, 0xc1f6, 0x01f6, 0x0df6, 0x2ff6, 0xe901,
+                         0xf601, 0x0101, 0x0d01, 0x1c01, 0xd80d, 0xe90d, 0xf60d, 0x010d, 0x0d0d, 0xc11c, 0xe91c, 0x011c, 0x1c1c, 0x2f1c, 0xe92f, 0x0d2f };
+
+uint u8(uint o)  { return uint(data_a[o]); }
+uint u16(uint o) { return u8(o) | (u8(o + 1) << 8); }
+uint u32(uint o) { return u16(o) | (u16(o + 2) << 16); }
+int  s8(uint v)  { return int(v << 24) >> 24; }
+
+void main() {
+    const uint ib = gl_GlobalInvocationID.x;
+    if (ib >= p.nel / 256) {
+        return;
+    }
+    const uint nbr = p.K / 256;
+    const uint row = ib / nbr;
+    const uint row_bytes = META + nbr*BS;
+#if META == 4
+    const float d = uintBitsToFloat(u32(row*row_bytes));
+#else
+    const float d = unpackHalf2x16(u16(row*row_bytes)).x;
+#endif
+    const uint b = row*row_bytes + META + (ib % nbr)*BS; // block start (bytes)
+    const uint y0 = 256 * ib;
+
+#if IQKS_TYPE == 1 // IQ4_KS: scales[8], qs[128]
+    [[unroll]] for (uint ib32 = 0; ib32 < 8; ++ib32) {
+        const uint sc = u8(b + ib32);
+        const float dl = d * float(int(sc & 254u) - 127);
+        const uint off = (sc & 1u) << 4;
+        [[unroll]] for (uint j = 0; j < 16; ++j) {
+            const uint q = u8(b + 8 + 16*ib32 + j);
+            data_b[y0 + 32*ib32 + j]      = D_TYPE(dl * float(iq4k[off + (q & 0xFu)]));
+            data_b[y0 + 32*ib32 + j + 16] = D_TYPE(dl * float(iq4k[off + (q >> 4)]));
+        }
+    }
+#elif IQKS_TYPE == 2 // IQ2_KS: extra u16, scales[4], qs[64]
+    uint extra = u16(b);
+    [[unroll]] for (uint ib64 = 0; ib64 < 4; ++ib64) {
+        const uint sc = u8(b + 2 + ib64);
+        const float dl1 = d * float(int((sc & 0xFu) | ((extra >> 4) & 0x10u)) - 16);
+        const float dl2 = d * float(int((sc >>  4) | ((extra >> 5) & 0x10u)) - 16);
+        const uint o1 = (extra & 1u) != 0 ? 4u : 0u;
+        const uint o2 = (extra & 2u) != 0 ? 4u : 0u;
+        extra >>= 2;
+        const uint shift = 4*(ib64 % 2);
+        [[unroll]] for (uint j = 0; j < 32; ++j) {
+            const uint q = u8(b + 6 + 32*(ib64/2) + j);
+            data_b[y0 + 64*ib64 + j]      = D_TYPE(dl1 * float(iq2nl[o1 + ((q >> (shift + 0)) & 3u)]));
+            data_b[y0 + 64*ib64 + j + 32] = D_TYPE(dl2 * float(iq2nl[o2 + ((q >> (shift + 2)) & 3u)]));
+        }
+    }
+#elif IQKS_TYPE == 3 // IQ4_KSS: qs u16[64]; bit0 of each u16 holds the block scale bits
+    [[unroll]] for (uint ib32 = 0; ib32 < 8; ++ib32) {
+        uint ls = 0;
+        uint aux[8];
+        [[unroll]] for (uint k = 0; k < 8; ++k) {
+            const uint q = u16(b + 16*ib32 + 2*k);
+            uint a = q & 0xFFFEu;
+            a ^= (a >> 1);
+            aux[k] = a;
+            ls |= (q & 1u) << k;
+        }
+        const uint off = (ls & 1u) << 4;
+        const float dl = d * float(int(ls & 254u) - 127);
+        [[unroll]] for (uint j = 0; j < 16; ++j) {
+            const uint byte = (aux[j/2] >> (8*(j%2))) & 0xFFu;
+            data_b[y0 + 32*ib32 + j]      = D_TYPE(dl * float(iq4k[off + (byte & 0xFu)]));
+            data_b[y0 + 32*ib32 + j + 16] = D_TYPE(dl * float(iq4k[off + (byte >> 4)]));
+        }
+    }
+#elif IQKS_TYPE == 4 // IQ5_KS: scales[8], qs[128], qh[32]
+    [[unroll]] for (uint ib64 = 0; ib64 < 4; ++ib64) {
+        const uint sc1 = u8(b + 2*ib64), sc2 = u8(b + 2*ib64 + 1);
+        const float dl1 = d * float(int(sc1 & 254u) - 127);
+        const float dl2 = d * float(int(sc2 & 254u) - 127);
+        const uint o1 = (sc1 & 1u) << 5, o2 = (sc2 & 1u) << 5;
+        [[unroll]] for (uint j = 0; j < 32; ++j) {
+            const uint q = u8(b + 8 + 32*ib64 + j);
+            const uint h = u8(b + 136 + j);
+            data_b[y0 + 64*ib64 + j]      = D_TYPE(dl1 * float(iq5nl[o1 + ((q & 0xFu) | (((h >> (2*ib64 + 0)) & 1u) << 4))]));
+            data_b[y0 + 64*ib64 + j + 32] = D_TYPE(dl2 * float(iq5nl[o2 + ((q >> 4)   | (((h >> (2*ib64 + 1)) & 1u) << 4))]));
+        }
+    }
+#elif IQKS_TYPE == 5 // IQ3_KS: extra u16, scales[4], qs[64], qh[32]
+    const uint extra = u16(b);
+    float dl[8];
+    [[unroll]] for (uint j = 0; j < 4; ++j) {
+        const uint sc = u8(b + 2 + j);
+        dl[j + 0] = d * float(int((sc & 0xFu) | (((extra >> (j + 0)) & 1u) << 4)) - 16);
+        dl[j + 4] = d * float(int((sc >>  4) | (((extra >> (j + 4)) & 1u) << 4)) - 16);
+    }
+    [[unroll]] for (uint i128 = 0; i128 < 2; ++i128) {
+        [[unroll]] for (uint k = 0; k < 4; ++k) {
+            const uint off = ((extra >> (8 + 4*i128 + k)) & 1u) << 3;
+            [[unroll]] for (uint j = 0; j < 32; ++j) {
+                const uint q = u8(b + 6 + 32*i128 + j);
+                const uint h = u8(b + 70 + j);
+                data_b[y0 + 128*i128 + 32*k + j] = D_TYPE(dl[4*i128 + k] * float(iq3nl[off + (((q >> (2*k)) & 3u) | (((h >> (4*i128 + k)) & 1u) << 2))]));
+            }
+        }
+    }
+#elif IQKS_TYPE == 6 // IQ2_KL: scales_h u16, scales_l[4], qs[64], qh[16]
+    const uint sh = u16(b);
+    [[unroll]] for (uint ib64 = 0; ib64 < 4; ++ib64) {
+        const float dl1 = d * float(int(((u8(b + 2 + (2*ib64 + 0) % 4) >> (4*(ib64/2))) & 0xFu) | (((sh >> (4*ib64 + 0)) & 3u) << 4)) - 32);
+        const float dl2 = d * float(int(((u8(b + 2 + (2*ib64 + 1) % 4) >> (4*(ib64/2))) & 0xFu) | (((sh >> (4*ib64 + 2)) & 3u) << 4)) - 32);
+        [[unroll]] for (uint j = 0; j < 16; ++j) {
+            const uint q = u8(b + 6 + 16*ib64 + j);
+            const uint h = u8(b + 70 + j);
+            const uint v1 = iq2kl[(q & 0xFu) | (((h >> (2*ib64 + 0)) & 1u) << 4)];
+            const uint v2 = iq2kl[(q >> 4)   | (((h >> (2*ib64 + 1)) & 1u) << 4)];
+            data_b[y0 + 64*ib64 + 2*j + 0]  = D_TYPE(dl1 * float(s8(v1 & 0xFFu)));
+            data_b[y0 + 64*ib64 + 2*j + 1]  = D_TYPE(dl1 * float(s8(v1 >> 8)));
+            data_b[y0 + 64*ib64 + 2*j + 32] = D_TYPE(dl2 * float(s8(v2 & 0xFFu)));
+            data_b[y0 + 64*ib64 + 2*j + 33] = D_TYPE(dl2 * float(s8(v2 >> 8)));
+        }
+    }
+#endif
+}

@@ -194,15 +194,6 @@ typedef struct {
 } block_q2_0;
 static_assert(sizeof(block_q2_0) == sizeof(ggml_half) + QK2_0 / 4, "wrong q2_0 block size/padding");
 
-// PQ2_0: Prism-private Q2_0 at group size 128. Same 2-bit codec as Q2_0
-// (group 64) but one fp16 scale per 128 weights (~5% smaller). Distinct ggml
-// type (142) so it coexists with upstream's group-64 Q2_0 (type 42).
-#define QK_PQ2_0 128
-typedef struct {
-    ggml_half d;                // delta (scale)
-    uint8_t qs[QK_PQ2_0 / 4];   // 2 bits per element
-} block_pq2_0;
-static_assert(sizeof(block_pq2_0) == sizeof(ggml_half) + QK_PQ2_0 / 4, "wrong pq2_0 block size/padding");
 
 #define QK4_0 32
 typedef struct {
@@ -393,6 +384,101 @@ typedef struct {
 } block_tq3_1s;                         // 16 bytes total
 static_assert(sizeof(block_tq3_1s) == 16, "wrong tq3_1s block size");
 
+// TQ3_4S: WHT-rotated 3-bit weights with 4 x E3M5 scales (one per group of 8)
+// Ported from turbo-tan/llama.cpp-tq3. 4 + 12 = 16 bytes per 32 values = 4.0 bpw
+typedef struct {
+    uint8_t d[4];                       //  4 bytes: E3M5 scales
+    uint8_t qs[QK_TQ3_0 * 3 / 8];       // 12 bytes: 3-bit indices
+} block_tq3_4s;
+static_assert(sizeof(block_tq3_4s) == 16, "wrong tq3_4s block size");
+
+// PQ2_0 / PTQ1_0: PrismML group-128 2-bit and ternary types (from PrismML's llama.cpp fork)
+#define QK_PQ2_0 128
+typedef struct {
+    ggml_half d;                   // delta (scale)
+    uint8_t qs[QK_PQ2_0 / 4];      // 2 bits per element
+} block_pq2_0;
+static_assert(sizeof(block_pq2_0) == sizeof(ggml_half) + QK_PQ2_0 / 4, "wrong pq2_0 block size/padding");
+
+#define QK_PTQ1_0 128
+typedef struct {
+    uint8_t qs[(QK_PTQ1_0 - 4*QK_PTQ1_0/64)/5]; // 24 B, 5 trits per byte -> 120 values
+    uint8_t qh[QK_PTQ1_0/64];                   //  2 B, 4 trits per byte ->   8 values
+    ggml_half d;                                // scale
+} block_ptq1_0;
+static_assert(sizeof(block_ptq1_0) == sizeof(ggml_half) + QK_PTQ1_0/64 + (QK_PTQ1_0 - 4*QK_PTQ1_0/64)/5, "wrong ptq1_0 block size/padding");
+#define QI_PQ2_0 (QK_PQ2_0 / 32)
+#define QR_PQ2_0 1
+#define QI_PTQ1_0 (QK_PTQ1_0 / 32)
+#define QR_PTQ1_0 1
+
+// beellama KV-cache scalar types (Anbeeld/beellama.cpp)
+#define QK6_0 32
+typedef struct {
+    ggml_half d;              // delta
+    uint8_t   qh[QK6_0 / 4];  // upper two bits of quants
+    uint8_t   qs[QK6_0 / 2];  // lower four bits of quants
+} block_q6_0;
+static_assert(sizeof(block_q6_0) == sizeof(ggml_half) + QK6_0 / 2 + QK6_0 / 4, "wrong q6_0 block size/padding");
+
+#define QK6_1 32
+typedef struct {
+    GGML_EXTENSION union {
+        struct {
+            ggml_half d; // delta
+            ggml_half m; // min
+        } GGML_COMMON_AGGR_S;
+        ggml_half2 dm;
+    } GGML_COMMON_AGGR_U;
+    uint8_t qh[QK6_1 / 4];  // upper two bits of quants
+    uint8_t qs[QK6_1 / 2];  // lower four bits of quants
+} block_q6_1;
+static_assert(sizeof(block_q6_1) == 2 * sizeof(ggml_half) + QK6_1 / 2 + QK6_1 / 4, "wrong q6_1 block size/padding");
+
+// 3-bit: 2-bit planes in qs (byte j holds elements j, j+8, j+16, j+24), 3rd bit per element in qh
+#define QK3_0 32
+typedef struct {
+    ggml_half d;             // delta
+    uint8_t   qh[QK3_0 / 8]; // upper bit of quants
+    uint8_t   qs[QK3_0 / 4]; // lower two bits of quants
+} block_q3_0;
+static_assert(sizeof(block_q3_0) == sizeof(ggml_half) + QK3_0 / 8 + QK3_0 / 4, "wrong q3_0 block size/padding");
+
+#define QK3_1 32
+typedef struct {
+    GGML_EXTENSION union {
+        struct {
+            ggml_half d; // delta
+            ggml_half m; // min
+        } GGML_COMMON_AGGR_S;
+        ggml_half2 dm;
+    } GGML_COMMON_AGGR_U;
+    uint8_t qh[QK3_1 / 8]; // upper bit of quants
+    uint8_t qs[QK3_1 / 4]; // lower two bits of quants
+} block_q3_1;
+static_assert(sizeof(block_q3_1) == 2 * sizeof(ggml_half) + QK3_1 / 8 + QK3_1 / 4, "wrong q3_1 block size/padding");
+
+// 2-bit: 2-bit planes in qs (byte j holds elements j, j+8, j+16, j+24)
+#define QK2_0S 32
+typedef struct {
+    ggml_half d;             // delta
+    uint8_t   qs[QK2_0S / 4]; // quants, two bits each
+} block_q2_0s;
+static_assert(sizeof(block_q2_0s) == sizeof(ggml_half) + QK2_0S / 4, "wrong q2_0s block size/padding");
+
+#define QK2_1 32
+typedef struct {
+    GGML_EXTENSION union {
+        struct {
+            ggml_half d; // delta
+            ggml_half m; // min
+        } GGML_COMMON_AGGR_S;
+        ggml_half2 dm;
+    } GGML_COMMON_AGGR_U;
+    uint8_t qs[QK2_1 / 4]; // quants, two bits each
+} block_q2_1;
+static_assert(sizeof(block_q2_1) == 2 * sizeof(ggml_half) + QK2_1 / 4, "wrong q2_1 block size/padding");
+
 // TQ4_1S: WHT-rotated 4-bit weight quantization (16-level Lloyd-Max for N(0,1))
 // Block size 32, dual half-block scales (d0 for [0..15], d1 for [16..31])
 // Per block: d0(fp16) + d1(fp16) + 4-bit indices packed (16 bytes) = 20 bytes per 32 values
@@ -582,6 +668,123 @@ typedef struct {
     uint8_t  qs[QK_K/2];
 } block_iq4_xs;
 static_assert(sizeof(block_iq4_xs) == sizeof(ggml_half) + sizeof(uint16_t) + QK_K/64 + QK_K/2, "wrong iq4_xs block size/padding");
+
+// ik_llama.cpp IQ_K quants (Iwan Kawrakow, MIT) - see docs/fork-types.md
+typedef struct {
+    ggml_half d;
+    uint16_t extra;
+    uint8_t  scales[QK_K/32];
+    uint8_t  qs[QK_K/4];
+} block_iq2_k;
+static_assert(sizeof(block_iq2_k) == sizeof(ggml_half) + sizeof(uint16_t) + QK_K/32 + QK_K/4, "wrong iq2_k block size/padding");
+
+typedef struct {
+    ggml_half d;
+    uint16_t extra;
+    uint16_t scales_h;
+    uint8_t scales_l[QK_K/32];
+    uint8_t qs[QK_K/4];
+    uint8_t qh[QK_K/8];
+} block_iq3_k;
+static_assert(sizeof(block_iq3_k) == sizeof(ggml_half) + 2*sizeof(uint16_t) + QK_K/32 + QK_K/4 + QK_K/8, "wrong iq3_k block size/padding");
+
+typedef struct {
+    ggml_half d;
+    uint16_t extra;
+    uint8_t  scales_h[QK_K/64];
+    uint8_t  scales_l[QK_K/32];
+    uint8_t  qs[QK_K/2];
+} block_iq4_k;
+static_assert(sizeof(block_iq4_k) == sizeof(ggml_half) + sizeof(uint16_t) + QK_K/2 + 3*QK_K/64, "wrong iq4_k block size/padding");
+
+typedef struct {
+    ggml_half d;
+    uint16_t extra;
+    uint8_t  scales_h[QK_K/64];
+    uint8_t  scales_l[QK_K/32];
+    uint8_t  qs[QK_K/2];
+    uint8_t  qh[QK_K/8];
+} block_iq5_k;
+static_assert(sizeof(block_iq5_k) == sizeof(ggml_half) + sizeof(uint16_t) + QK_K/2 + QK_K/8 + 3*QK_K/64, "wrong iq5_k block size/padding");
+
+typedef struct {
+    ggml_half d;
+    uint16_t extra;
+    int8_t   scales[QK_K/16];
+    uint8_t  qs[QK_K/2];
+    uint8_t  qh[QK_K/4];
+} block_iq6_k;
+static_assert(sizeof(block_iq6_k) == sizeof(ggml_half) + sizeof(uint16_t) + QK_K/2 + QK_K/4 + QK_K/16, "wrong iq6_k block size/padding");
+
+// ik_llama.cpp row-scaled types (per-row scale stored before the blocks)
+typedef struct {
+    uint8_t  scales[QK_K/32];
+    uint8_t  qs[QK_K/2];
+} block_iq4_ks;
+static_assert(sizeof(block_iq4_ks) == QK_K/32 + QK_K/2, "wrong iq4_ks block size/padding");
+
+typedef struct {
+    uint16_t extra;
+    uint8_t  scales[QK_K/64];
+    uint8_t  qs[QK_K/4];
+} block_iq2_ks;
+static_assert(sizeof(block_iq2_ks) == sizeof(uint16_t) + QK_K/64 + QK_K/4, "wrong iq2_ks block size/padding");
+
+typedef struct {
+    uint32_t qs[QK_K/8];
+} block_iq4_kss;
+static_assert(sizeof(block_iq4_kss) == QK_K/8*sizeof(uint32_t), "wrong iq4_kss block size/padding");
+
+typedef struct {
+    uint8_t  scales[QK_K/32];
+    uint8_t  qs[QK_K/2];
+    uint8_t  qh[QK_K/8];
+} block_iq5_ks;
+static_assert(sizeof(block_iq5_ks) == QK_K/32 + QK_K/2 + QK_K/8, "wrong iq5_ks block size/padding");
+
+// ik_llama.cpp trellis types (row-scaled: float per row in front of the blocks)
+typedef struct {
+    uint8_t  sh[QK_K/32]; // 4-bit scales + 13th bits for groups of 8
+    uint8_t  ql[QK_K/8];  //  low 8 bits for groups of 8
+    uint8_t  qh[QK_K/16]; // high 4 bits for groups of 8
+} block_iq1_kt;
+static_assert(sizeof(block_iq1_kt) == QK_K/8 + QK_K/16 + QK_K/32, "wrong iq1_kt block size/padding");
+
+typedef struct {
+    uint8_t  scales[QK_K/64];
+    uint8_t  ql[QK_K/4];
+} block_iq2_kt;
+static_assert(sizeof(block_iq2_kt) == QK_K/4 + QK_K/64, "wrong iq2_kt block size/padding");
+
+typedef struct {
+    uint8_t  scales[QK_K/64];
+    uint8_t  ql[QK_K/4];
+    uint8_t  qh[QK_K/8];
+} block_iq3_kt;
+static_assert(sizeof(block_iq3_kt) == QK_K/4 + QK_K/8 + QK_K/64, "wrong iq3_kt block size/padding");
+
+typedef struct {
+    uint32_t qs[QK_K/8];
+} block_iq4_kt;
+static_assert(sizeof(block_iq4_kt) == QK_K/2, "wrong iq4_kt block size/padding");
+
+typedef struct {
+    uint16_t extra;
+    uint8_t scales[QK_K/64];
+    uint8_t qs[QK_K/4];
+    uint8_t qh[QK_K/8];
+} block_iq3_ks;
+static_assert(sizeof(block_iq3_ks) == sizeof(uint16_t) + QK_K/64 + QK_K/4 + QK_K/8, "wrong iq3_ks block size/padding");
+
+typedef struct {
+    uint16_t scales_h;
+    uint8_t  scales_l[QK_K/64];
+    uint8_t  qs[QK_K/4];
+    uint8_t  qh[QK_K/16];
+} block_iq2_kl;
+static_assert(sizeof(block_iq2_kl) == sizeof(uint16_t) + QK_K/64 + QK_K/4 + QK_K/16, "wrong iq2_kl block size/padding");
+
+
 
 #endif // GGML_COMMON_DECL
 #endif // GGML_COMMON_DECL
@@ -1244,6 +1447,43 @@ GGML_TABLE_END()
 GGML_TABLE_BEGIN(int8_t, kvalues_iq4nl, 16)
     -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
 GGML_TABLE_END()
+
+// ik_llama.cpp IQ_K non-linear value tables (Iwan Kawrakow, MIT)
+GGML_TABLE_BEGIN(int8_t, iq2nl_values, 8)
+    -31, -13, 1, 17,   -26, -8, 6, 22
+GGML_TABLE_END()
+
+GGML_TABLE_BEGIN(uint16_t, iq2kl_values, 32)
+    0xe9c1, 0x0dc1, 0xc1d8, 0xf6d8, 0x0dd8, 0x2fd8, 0xd8e9, 0xe9e9, 0x01e9, 0x0de9, 0x1ce9, 0xc1f6, 0x01f6, 0x0df6, 0x2ff6, 0xe901,
+    0xf601, 0x0101, 0x0d01, 0x1c01, 0xd80d, 0xe90d, 0xf60d, 0x010d, 0x0d0d, 0xc11c, 0xe91c, 0x011c, 0x1c1c, 0x2f1c, 0xe92f, 0x0d2f,
+GGML_TABLE_END()
+
+GGML_TABLE_BEGIN(int8_t, iq3nl_values, 16)
+    -63, -40, -23, -10, 1, 13, 28,  47,
+    -59, -36, -19,  -6, 5, 17, 32,  51,
+GGML_TABLE_END()
+
+GGML_TABLE_BEGIN(int8_t, iq4k_values, 32)
+    -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+    -123, -100, -79, -61, -45, -31, -18,  -6, 5, 17, 29, 42, 57, 73, 93, 117
+GGML_TABLE_END()
+
+GGML_TABLE_BEGIN(int8_t, iq5nl_values, 64)
+    -126, -114, -103, -92, -83, -74, -65, -57, -50, -43, -36, -30, -24, -18, -12, -6, -1, 5, 11, 17, 23, 29, 36, 43, 51, 59, 68, 77, 87, 97, 109, 121,
+    -124, -112, -101, -90, -81, -72, -63, -55, -48, -41, -34, -28, -22, -16, -10, -4,  1, 7, 13, 19, 25, 31, 38, 45, 53, 61, 70, 79, 89, 99, 111, 123,
+GGML_TABLE_END()
+
+GGML_TABLE_BEGIN(int8_t, iq6nl_values, 128)
+    -127, -121, -115, -109, -104,  -98,  -93,  -88,  -84,  -79,  -74,  -70,  -66,  -62,  -58,  -54,
+     -51,  -47,  -44,  -40,  -37,  -34,  -31,  -28,  -25,  -22,  -19,  -16,  -13,  -11,   -8,   -5,
+      -2,    0,    3,    6,    9,   12,   14,   17,   20,   23,   27,   30,   33,   36,   40,   44,
+      47,   51,   55,   59,   63,   68,   72,   77,   82,   87,   92,   98,  103,  109,  115,  121,
+    -126, -120, -114, -108, -103,  -97,  -92,  -87,  -83,  -78,  -73,  -69,  -65,  -61,  -57,  -53,
+     -50,  -46,  -43,  -39,  -36,  -33,  -30,  -27,  -24,  -21,  -18,  -15,  -12,  -10,   -7,   -4,
+      -1,    1,    4,    7,   10,   13,   15,   18,   21,   24,   28,   31,   34,   37,   41,   45,
+      48,   52,   56,   60,   64,   69,   73,   78,   83,   88,   93,   99,  104,  110,  116,  122,
+GGML_TABLE_END()
+
 
 // e2m1 values (doubled), shared by MXFP4 and NVFP4
 // ref: https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf

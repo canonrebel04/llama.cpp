@@ -68,6 +68,22 @@ static inline float e8m0_to_fp32(uint8_t x) {
     return as_type<float>(bits);
 }
 
+// UE4M3 -> fp32, raw E4M3 value (matches the CPU ggml_ue4m3_to_fp32 without
+// its * 0.5 fold; that fold pairs the x2 kvalues_mxfp4 table, while the Metal
+// kvalues_mxfp4_f table is already halved).
+static inline float nvfp4_ue4m3_to_fp32(uint8_t x) {
+    if (x == 0 || x == 0x7F) {
+        return 0.0f;
+    }
+    const int exp = (x >> 3) & 0xF;
+    const int man = x & 0x7;
+    if (exp == 0) {
+        return (float)man * (1.0f / 512.0f);
+    }
+    const uint32_t bits = ((uint32_t)(exp + 120) << 23) | ((uint32_t)man << 20);
+    return as_type<float>(bits);
+}
+
 static inline float dot(float x, float y) {
     return x*y;
 }

@@ -8,6 +8,8 @@ llama.cpp supports speculative decoding, a technique that can significantly acce
 
 The `llama-server` application supports several implementations of speculative decoding. An implementation with draft model can be mixed with an implementation without draft model.
 
+Fork note (atomic-llama-cpp-turboquant): `--spec-type mtp` and `--spec-type nextn` are aliases of `draft-mtp`, and `--mtp-head FNAME` is an alias of `--spec-draft-model`. Model-specific recipes: [MTP.md](../MTP.md) (Gemma 4 assistant) and [NEXTN.md](../NEXTN.md) (Qwen 3.5/3.6 NextN).
+
 ### Draft Model (`draft`)
 
 A much smaller model (called the _draft model_) generates drafts.
@@ -129,8 +131,9 @@ llama-server -m Qwen3-4B.gguf -md Qwen3-4B-DSpark.gguf \
 
 `--spec-draft-n-max` is clamped to the draft model's trained block size.
 
-`--spec-draft-conf-min P` truncates each drafted block at the first position whose predicted
-acceptance (from the draft's confidence head, if present) falls below `P` (default 0 = disabled).
+`--spec-draft-p-min P` truncates each drafted block at the first position whose predicted
+acceptance (from the draft's confidence head) falls below `P` (default 0 = disabled).
+Values above 0 require a draft with a confidence head.
 
 Currently only drafts with a Qwen3 backbone are supported; support for other backbones
 (e.g. Gemma4) is planned.
@@ -286,6 +289,9 @@ Use exactly one of these options:
 --spec-mtp-rs-planes                    N
                                         total target recurrent-state planes for draft-mtp, including the current state (default: 0, use spec-draft-n-max + 1)
                                         (env: LLAMA_ARG_SPEC_MTP_RS_PLANES)
+--spec-draft-n-ubatch                   N
+                                        physical maximum batch size of the draft context, use a smaller value to spare VRAM (default: 0 - same as --n-ubatch)
+                                        (env: LLAMA_ARG_SPEC_DRAFT_N_UBATCH)
 --spec-draft-p-split, --draft-p-split   P
                                         speculative decoding split probability (default: 0.10)
                                         (env: LLAMA_ARG_SPEC_DRAFT_P_SPLIT)

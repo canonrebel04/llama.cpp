@@ -31,6 +31,6 @@ struct llama_model_fuse3 : public llama_model_lfm2 {
 
     template <bool iswa>
     struct graph : llm_graph_context {
-        graph(const llama_model & model, const llm_graph_params & params);
+        graph(const llm_graph_params & params);
     };
 };

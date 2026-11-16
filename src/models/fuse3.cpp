@@ -34,12 +34,11 @@ void llama_model_fuse3::load_arch_hparams(llama_model_loader & ml) {
     hparams.n_layer_dense_lead = hparams.n_layer();
 
     // Load Fuse3-specific hparams
-    ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all);
+    ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all, true);
     // NOTE: the shipped converter writes "expert_top_k" unprefixed
-    {
-        uint32_t n_expert_used_cfg = 8;
-        ml.get_key("expert_top_k", n_expert_used_cfg, false);
-        hparams.n_expert_used_arr.fill(n_expert_used_cfg);
+    uint32_t expert_top_k = 8;
+    if (ml.get_key("expert_top_k", expert_top_k, false) || hparams.n_expert_used() == 0) {
+        std::fill(hparams.n_expert_used_arr.begin(), hparams.n_expert_used_arr.end(), expert_top_k);
     }
 
     // Load Fuse3 custom parameters
@@ -130,14 +129,14 @@ void llama_model_fuse3::load_arch_tensors(llama_model_loader & ml) {
 std::unique_ptr<llm_graph_context> llama_model_fuse3::build_arch_graph(const llm_graph_params & params) const {
     // Reuse LFM2's SWA detection
     if (hparams.swa_type == LLAMA_SWA_TYPE_STANDARD) {
-        return std::make_unique<graph<true>>(*this, params);
+        return std::make_unique<graph<true>>(params);
     } else {
-        return std::make_unique<graph<false>>(*this, params);
+        return std::make_unique<graph<false>>(params);
     }
 }
 
 template <bool iswa>
-llama_model_fuse3::graph<iswa>::graph(const llama_model & model, const llm_graph_params & params) :
+llama_model_fuse3::graph<iswa>::graph(const llm_graph_params & params) :
     llm_graph_context(params) {
     using inp_hybrid_type = std::conditional_t<iswa, llm_graph_input_mem_hybrid_iswa,  llm_graph_input_mem_hybrid>;
     using inp_attn_type   = std::conditional_t<iswa, llm_graph_input_attn_kv_iswa,     llm_graph_input_attn_kv>;
@@ -152,7 +151,7 @@ llama_model_fuse3::graph<iswa>::graph(const llama_model & model, const llm_graph
         return t->type == GGML_TYPE_F32 ? t : ggml_cast(ctx0, t, GGML_TYPE_F32);
     };
 
-    auto build_dense_feed_forward = [&model, this](ggml_tensor * cur, int il) -> ggml_tensor * {
+    auto build_dense_feed_forward = [this](ggml_tensor * cur, int il) -> ggml_tensor * {
         return build_ffn(cur,
             model.layers[il].ffn_up, NULL, NULL,
             model.layers[il].ffn_gate, NULL, NULL,
@@ -275,7 +274,7 @@ llama_model_fuse3::graph<iswa>::graph(const llama_model & model, const llm_graph
     };
 
     // Attention block (same as LFM2)
-    auto build_attn_block = [&model, this, &f32w](ggml_tensor *   cur,
+    auto build_attn_block = [this, &f32w](ggml_tensor *   cur,
                                            ggml_tensor *   inp_pos,
                                            inp_attn_type * inp_attn,
                                            int             il) -> ggml_tensor * {
@@ -301,7 +300,7 @@ llama_model_fuse3::graph<iswa>::graph(const llama_model & model, const llm_graph
     };
 
     // ShortConv block (same as LFM2)
-    auto build_shortconv_block = [&model, this, &f32w](ggml_tensor *        cur,
+    auto build_shortconv_block = [this, &f32w](ggml_tensor *        cur,
                                                 llm_graph_input_rs * inp_recr,
                                                 int                  il) -> ggml_tensor * {
         const auto * mctx_cur = static_cast<const mem_hybrid_ctx *>(mctx)->get_recr();
