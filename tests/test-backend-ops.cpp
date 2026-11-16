@@ -8900,6 +8900,57 @@ struct test_flash_attn_ext : public test_case {
     }
 };
 
+// Exercise the cache-domain attention paths with reproducible input bytes.
+struct test_flash_attn_turbo : public test_flash_attn_ext {
+    test_flash_attn_turbo(int64_t hs, int64_t kv, int64_t nq, bool mask, ggml_type tk, ggml_type tv)
+        : test_flash_attn_ext(hs, hs, 2, {8, 1}, kv, nq, mask, false, 0, 0, GGML_PREC_F32, tk, tv) {}
+
+    std::string op_desc(ggml_tensor *) override { return "FLASH_ATTN_TURBO"; }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * attn = test_flash_attn_ext::build_graph(ctx);
+        if (type_K == type_V) {
+            // Match the graph's forward Q and inverse output rotations.
+            attn->src[0] = ggml_turbo_wht(ctx, attn->src[0], 0, 0, nullptr);
+            ggml_tensor * out = ggml_turbo_wht(ctx, attn, 1, 0, nullptr);
+            ggml_set_name(out, "out");
+            return out;
+        }
+        return attn;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        uint32_t seed = 0;
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+            if (t->op != GGML_OP_NONE || ggml_is_view_op(t->op)) {
+                continue;
+            }
+            const size_t n = ggml_nelements(t);
+            std::vector<float> values(n);
+            ++seed;
+            for (size_t i = 0; i < n; ++i) {
+                uint32_t x = uint32_t(i + 1)*747796405u + seed*2891336453u;
+                x = ((x >> ((x >> 28) + 4)) ^ x)*277803737u;
+                x = (x >> 22) ^ x;
+                values[i] = float(x & 0xffffu)/32768.0f - 1.0f;
+            }
+            if (strcmp(t->name, "m") == 0) {
+                for (size_t i = 0; i < n; ++i) {
+                    values[i] = (i % 11 == 0) ? -10000.0f : 0.0f;
+                }
+            }
+            if (t->type == GGML_TYPE_F32) {
+                ggml_backend_tensor_set(t, values.data(), 0, n*sizeof(float));
+            } else {
+                const size_t bs = ggml_blck_size(t->type);
+                std::vector<uint8_t> encoded(ggml_nbytes(t));
+                ggml_quantize_chunk(t->type, values.data(), encoded.data(), 0, n/bs, bs, nullptr);
+                ggml_backend_tensor_set(t, encoded.data(), 0, encoded.size());
+            }
+        }
+    }
+};
+
 // large Q values, so the online softmax has to rescale the partial results
 struct test_flash_attn_ext_large_logits : public test_flash_attn_ext {
     static constexpr int q_range = 20;
@@ -12317,6 +12368,23 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext(128, 64, 4, {1, 1}, 128, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q2_0, GGML_TYPE_Q4_0));
     test_cases.emplace_back(new test_flash_attn_ext(64, 128, 4, {1, 1}, 128, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0, GGML_TYPE_Q2_0));
     test_cases.emplace_back(new test_flash_attn_ext(128, 64, 4, {1, 1}, 64, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q2_0, GGML_TYPE_F16));
+
+    for (int64_t hs : {128, 256}) {
+        for (ggml_type type : {GGML_TYPE_TURBO2_0, GGML_TYPE_TURBO3_0, GGML_TYPE_TURBO4_0}) {
+            for (int64_t nq : {1, 2, 3, 4}) {
+                for (bool mask : {false, true}) {
+                    test_cases.emplace_back(new test_flash_attn_turbo(hs, 256, nq, mask, type, type));
+                }
+            }
+            // Prefill fallback and a non-aligned KV tail.
+            test_cases.emplace_back(new test_flash_attn_turbo(hs, 256, 5, true, type, type));
+            test_cases.emplace_back(new test_flash_attn_turbo(hs, 113, 3, true, type, type));
+            // Mixed types force the vector path for a single query.
+            for (bool mask : {false, true}) {
+                test_cases.emplace_back(new test_flash_attn_turbo(hs, 256, 1, mask, GGML_TYPE_F16, type));
+            }
+        }
+    }
 
     // q8_0 KV cases: decode and prompt batches, KV pad, permuted KV, feature flags, and long context
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1},   113,   1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));

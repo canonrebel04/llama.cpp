@@ -529,14 +529,11 @@ static __constant__ float TURBO_CENTROIDS_4BIT_FATTN[16] = {
      0.111036f,  0.143016f,  0.182877f,  0.241529f
 };
 
-// Dequantize a turbo4_0-quantized tile (block_turbo4_0 = ggml_half norm + uint8_t qs[64],
-// sizeof()==66, NO rnorm) into the SRAM `tile_KV` in the SAME half2 row-major layout the
-// f16 loader produces, so the downstream load_ldmatrix / load_ldmatrix_trans paths are
-// byte-identical to f16.
+// Dequantize a turbo4_0 tile into the same swizzled half2 SRAM layout
+// used by the f16 loader and the downstream ldmatrix consumers.
 //
 // Mirrors the call convention of flash_attn_ext_f16_load_tile:
-//   KV_raw      : RAW byte base of the first KV row to load (already advanced past
-//                 k_VKQ_0 rows and `col_offset` half2-columns by the caller in BYTES).
+//   KV_raw      : RAW byte base of the first KV row (already advanced by k_VKQ_0 rows).
 //   tile_KV     : SRAM destination (half2), row pitch `stride_tile`.
 //   D2          : number of half2 columns to load for this call (== nbatch_K2/V2; for
 //                 D=128 turbo this is always 64 == DKQ/2 == one full block per row).
@@ -586,7 +583,7 @@ static __device__ __forceinline__ void flash_attn_ext_turbo4_load_tile(
             for (; c < c_end; ++c) {
                 const int in_blk = (col_offset + c) % (QK_TURBO4 / 2);
                 const uint8_t byte = blk->qs[in_blk];
-                tile_KV[row*stride_tile + c] = __halves2half2(scaled[byte & 0xF], scaled[byte >> 4]);
+                tile_KV[swizzle<stride_tile, half2>(row*stride_tile + c, row)] = __halves2half2(scaled[byte & 0xF], scaled[byte >> 4]);
             }
         }
     }
@@ -626,7 +623,7 @@ static __device__ __forceinline__ void flash_attn_ext_turbo3_load_tile(
             const uint8_t idx1 = ((qs_byte >> (shift+2)) & 0x3) | (((sgn_byte >> (j0 % 8 + 1)) & 0x1) << 2);
             const half lo = __float2half(TURBO_CENTROIDS_3BIT_FATTN[idx0] * norm);
             const half hi = __float2half(TURBO_CENTROIDS_3BIT_FATTN[idx1] * norm);
-            tile_KV[row*stride_tile + c] = __halves2half2(lo, hi);
+            tile_KV[swizzle<stride_tile, half2>(row*stride_tile + c, row)] = __halves2half2(lo, hi);
         }
     }
 }
@@ -648,20 +645,19 @@ static __device__ __forceinline__ void flash_attn_ext_turbo2_load_tile(
             continue;
         }
         const char * row_ptr = KV_raw + (int64_t)row * stride_bytes;
-        for (int c = 0; c < D2; ++c) {
-            const int col   = col_offset + c;
-            const int elem0 = col * 2;
-            const int ib    = elem0 / QK_TURBO2;
-            const int j0    = elem0 % QK_TURBO2;
-            const block_turbo2_0 * blk = (const block_turbo2_0 *)(row_ptr) + ib;
-            const float   norm    = __half2float(blk->norm);
-            const uint8_t qs_byte = blk->qs[j0 / 4];
-            const int     shift   = (j0 % 4) * 2;
-            const uint8_t idx0 = (qs_byte >> shift)     & 0x3;
-            const uint8_t idx1 = (qs_byte >> (shift+2)) & 0x3;
-            const half lo = __float2half(TURBO_CENTROIDS_2BIT_FATTN[idx0] * norm);
-            const half hi = __float2half(TURBO_CENTROIDS_2BIT_FATTN[idx1] * norm);
-            tile_KV[row*stride_tile + c] = __halves2half2(lo, hi);
+        // Full-row tiles have an even half2 column offset and length. Decode
+        // each packed byte once into its two adjacent half2 values.
+        for (int c = 0; c < D2; c += 2) {
+            const int elem = (col_offset + c) * 2;
+            const block_turbo2_0 * blk = (const block_turbo2_0 *) row_ptr + elem / QK_TURBO2;
+            const float norm = __half2float(blk->norm);
+            const uint8_t byte = blk->qs[(elem % QK_TURBO2) / 4];
+            const half a = __float2half(TURBO_CENTROIDS_2BIT_FATTN[(byte >> 0) & 3] * norm);
+            const half b = __float2half(TURBO_CENTROIDS_2BIT_FATTN[(byte >> 2) & 3] * norm);
+            const half d = __float2half(TURBO_CENTROIDS_2BIT_FATTN[(byte >> 4) & 3] * norm);
+            const half e = __float2half(TURBO_CENTROIDS_2BIT_FATTN[(byte >> 6) & 3] * norm);
+            tile_KV[swizzle<stride_tile, half2>(row*stride_tile + c, row)] = __halves2half2(a, b);
+            tile_KV[swizzle<stride_tile, half2>(row*stride_tile + c + 1, row)] = __halves2half2(d, e);
         }
     }
 }
