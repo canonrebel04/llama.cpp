@@ -2004,8 +2004,9 @@ shared int8_t kvalues_mxfp4[16];
 #endif
 
 #if defined(DATA_A_NVFP4) && !defined(USE_OCP_FP4)
-// UE4M3 scale in NVFP4 blocks use only 7 bits; sign (bit 7) is always zero.
-shared float ue4m3_fp32_lut[128];
+// Cover all scale bytes accepted by ggml_validate_row_data.
+// ue4m3_to_fp32_build() masks the exponent and mantissa, but checks the full byte for 0 and 0x7F.
+shared float ue4m3_fp32_lut[256];
 
 float ue4m3_to_fp32_build(uint u) {
     if (u == 0u || u == 127u) {
@@ -2030,7 +2031,7 @@ void init_iq_shmem(uvec3 wgsize)
         kvalues_mxfp4[i] = kvalues_mxfp4_const[i];
     }
 #if defined(DATA_A_NVFP4)
-    for (uint i = gl_LocalInvocationIndex.x; i < 128u; i += wgsize.x) {
+    for (uint i = gl_LocalInvocationIndex.x; i < 256u; i += wgsize.x) {
         ue4m3_fp32_lut[i] = ue4m3_to_fp32_build(i);
     }
 #endif
@@ -2103,6 +2104,57 @@ float ue4m3_to_fp32(uint8_t x) {
 #define BDA_STORAGE_T uvec2
 #define BDA_OFFSET_T uint
 
+#endif
+
+
+// beellama KV cache types (32-element blocks, byte arrays so std430 stride == ggml size)
+#define QUANT_K_Q6_0 32
+#define QUANT_R_Q6_0 1
+struct block_q6_0 { float16_t d; uint8_t qh[8]; uint8_t qs[16]; };
+#define QUANT_K_Q6_1 32
+#define QUANT_R_Q6_1 1
+struct block_q6_1 { float16_t d; float16_t m; uint8_t qh[8]; uint8_t qs[16]; };
+#define QUANT_K_Q3_0 32
+#define QUANT_R_Q3_0 1
+struct block_q3_0 { float16_t d; uint8_t qh[4]; uint8_t qs[8]; };
+#define QUANT_K_Q3_1 32
+#define QUANT_R_Q3_1 1
+struct block_q3_1 { float16_t d; float16_t m; uint8_t qh[4]; uint8_t qs[8]; };
+#define QUANT_K_Q2_0S 32
+#define QUANT_R_Q2_0S 1
+struct block_q2_0s { float16_t d; uint8_t qs[8]; };
+#define QUANT_K_Q2_1 32
+#define QUANT_R_Q2_1 1
+struct block_q2_1 { float16_t d; float16_t m; uint8_t qs[8]; };
+#if defined(DATA_A_Q6_0)
+#define QUANT_K QUANT_K_Q6_0
+#define QUANT_R QUANT_R_Q6_0
+#define A_TYPE block_q6_0
+#endif
+#if defined(DATA_A_Q6_1)
+#define QUANT_K QUANT_K_Q6_1
+#define QUANT_R QUANT_R_Q6_1
+#define A_TYPE block_q6_1
+#endif
+#if defined(DATA_A_Q3_0)
+#define QUANT_K QUANT_K_Q3_0
+#define QUANT_R QUANT_R_Q3_0
+#define A_TYPE block_q3_0
+#endif
+#if defined(DATA_A_Q3_1)
+#define QUANT_K QUANT_K_Q3_1
+#define QUANT_R QUANT_R_Q3_1
+#define A_TYPE block_q3_1
+#endif
+#if defined(DATA_A_Q2_0S)
+#define QUANT_K QUANT_K_Q2_0S
+#define QUANT_R QUANT_R_Q2_0S
+#define A_TYPE block_q2_0s
+#endif
+#if defined(DATA_A_Q2_1)
+#define QUANT_K QUANT_K_Q2_1
+#define QUANT_R QUANT_R_Q2_1
+#define A_TYPE block_q2_1
 #endif
 
 #endif // !defined(GGML_TYPES_COMP)

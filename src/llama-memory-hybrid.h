@@ -20,14 +20,16 @@ class llama_memory_hybrid : public llama_memory_i {
 public:
     llama_memory_hybrid(
         const llama_model & model,
+                     bool   no_alloc,
                             /* attn */
                 ggml_type   type_k,
                 ggml_type   type_v,
                      bool   v_trans,
                  uint32_t   kv_size,
-                 uint32_t   n_pad,
                  uint32_t   n_swa,
            llama_swa_type   swa_type,
+                     bool   offload_attn,
+ llama_memory_placement_options placement,
                             /* recurrent */
                 ggml_type   type_r,
                 ggml_type   type_s,
@@ -35,11 +37,13 @@ public:
                             /* common */
                  uint32_t   n_seq_max,
                  uint32_t   n_rs_seq,
-                     bool   offload,
                      bool   unified,
                             /* layer filters */
     const layer_filter_cb & filter_attn = nullptr,
-    const layer_filter_cb & filter_recr = nullptr);
+    const layer_filter_cb & filter_recr = nullptr,
+                     size_t kv_stream_stage_bytes = 0,
+                     void * kv_stream_phase_arena = nullptr,
+                     size_t kv_stream_maximum_pool_bytes = 0);
 
     ~llama_memory_hybrid() = default;
 
@@ -54,9 +58,22 @@ public:
 
     llama_memory_context_ptr init_full() override;
 
+    llama_memory_context_ptr init_reserve(uint32_t n_kv) override;
+
+    uint32_t get_attn_reserve_capacity() const override;
+
     llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) override;
 
     bool get_can_shift() const override;
+    bool can_decode_sampled() const override;
+    void seq_set_last_token(llama_seq_id seq_id, llama_pos pos, llama_token token) override;
+
+    bool recurrent_sparse_snapshots_supported() const override;
+    bool recurrent_set_sparse_snapshot_mode(bool enabled, int32_t selected_token) override;
+
+    bool get_supports_partial_kv() const override {
+        return true;
+    }
 
     void clear(bool data) override;
 
@@ -75,6 +92,9 @@ public:
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0)       override;
+
+    bool has_kv_stream_targets() const override;
+    std::vector<llama_kv_stream_target> get_kv_stream_targets() const override;
 
     //
     // llama_memory_hybrid specific API
@@ -100,6 +120,10 @@ public:
     // init full
     explicit llama_memory_hybrid_context(llama_memory_hybrid * mem);
 
+    llama_memory_hybrid_context(
+              llama_memory_hybrid * mem,
+        llama_memory_context_ptr   ctx_attn);
+
     // init update
     explicit llama_memory_hybrid_context(
         llama_memory_hybrid * mem,
@@ -119,11 +143,15 @@ public:
 
     llama_memory_status  get_status() const override;
     const llama_ubatch & get_ubatch() const override;
+    uint32_t get_attn_reserve_n_kv() const override;
 
     // TurboQuant: delegate to the KV cache context
     ggml_tensor * get_turbo_rot_forward() const override;
     ggml_tensor * get_turbo_rot_inverse() const override;
     ggml_tensor * get_turbo_innerq_scale_inv() const override;
+
+    bool has_kv_stream_targets() const override;
+    std::vector<llama_kv_stream_active_target> get_kv_stream_active_targets() const override;
 
     //
     // llama_memory_hybrid_context

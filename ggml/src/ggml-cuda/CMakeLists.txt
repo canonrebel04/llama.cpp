@@ -111,10 +111,12 @@ if (CUDAToolkit_FOUND)
     endif()
     message(STATUS "Using CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES} CMAKE_CUDA_ARCHITECTURES_NATIVE=${CMAKE_CUDA_ARCHITECTURES_NATIVE}")
 
+    add_compile_definitions(GGML_CUDA_COMPACT_CAUSAL_MASK)
+
     file(GLOB   GGML_HEADERS_CUDA "*.cuh")
     list(APPEND GGML_HEADERS_CUDA "../../include/ggml-cuda.h")
 
-    file(GLOB   GGML_SOURCES_CUDA "*.cu")
+    file(GLOB   GGML_SOURCES_CUDA CONFIGURE_DEPENDS "*.cu")
     file(GLOB   SRCS "template-instances/fattn-tile*.cu")
     list(APPEND GGML_SOURCES_CUDA ${SRCS})
     file(GLOB   SRCS "template-instances/fattn-mma*.cu")
@@ -149,11 +151,18 @@ if (CUDAToolkit_FOUND)
         template-instances/fattn-vec-instance-turbo3_0-turbo4_0.cu
         template-instances/fattn-vec-instance-turbo4_0-turbo2_0.cu
         template-instances/fattn-vec-instance-turbo2_0-turbo4_0.cu)
+    # kv-stream and fattn.cu still gate native quantized KV on this macro.
+    # The helper above already treats the option as FA_QUANTS=all.
+    if (GGML_CUDA_FA_ALL_QUANTS)
+        add_compile_definitions(GGML_CUDA_FA_ALL_QUANTS)
+    endif()
 
     ggml_add_backend_library(ggml-cuda
                              ${GGML_HEADERS_CUDA}
                              ${GGML_SOURCES_CUDA}
                             )
+
+    add_compile_definitions(GGML_CUDA_PEER_MAX_BATCH_SIZE=${GGML_CUDA_PEER_MAX_BATCH_SIZE})
 
     if (GGML_CUDA_GRAPHS)
         add_compile_definitions(GGML_CUDA_USE_GRAPHS)

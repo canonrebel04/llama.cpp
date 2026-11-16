@@ -1,7 +1,10 @@
+import json
 import pytest
 import requests
 import time
 import random
+
+from concurrent.futures import ThreadPoolExecutor
 
 from openai import OpenAI
 from utils import *
@@ -631,24 +634,132 @@ def test_logit_bias(tokenize, openai_style):
     assert all(output_text.find(" " + tok + " ") == -1 for tok in exclude)
 
 
-def test_cancel_request():
+def test_cancel_active_request_and_reuse_slot():
     global server
-    server.n_ctx = 4096
-    server.n_predict = -1
-    server.n_slots = 1
+    server.n_ctx = 2048
+    server.n_slots = 2
+    server.server_continuous_batching = True
     server.server_slots = True
+    server.temperature = 0.0
     server.start()
-    # send a request that will take a long time, but cancel it before it finishes
+
+    cancel_response = None
+    executor = None
+    survivor_future = None
+    try:
+        executor = ThreadPoolExecutor(max_workers=1)
+        reference_request = {
+            "prompt": "A reusable slot must answer this deterministic prompt:",
+            "id_slot": 0,
+            "n_predict": 16,
+            "ignore_eos": True,
+            "cache_prompt": False,
+            "return_tokens": True,
+        }
+        reference = server.make_request("POST", "/completion", data=reference_request)
+        assert reference.status_code == 200
+        assert reference.body["id_slot"] == 0
+
+        cancel_request = {
+            "prompt": "This request should remain active until its client disconnects. " * 4,
+            "id_slot": 0,
+            "n_predict": 512,
+            "ignore_eos": True,
+            "cache_prompt": False,
+            "stream": True,
+        }
+        cancel_url = f"http://{server.server_host}:{server.server_port}/completion"
+        cancel_response = requests.post(cancel_url, json=cancel_request, stream=True, timeout=(5, 60))
+        assert cancel_response.status_code == 200
+        cancel_lines = cancel_response.iter_lines(chunk_size=1)
+        first_cancel_chunk = None
+        for line in cancel_lines:
+            if not line.startswith(b"data: ") or line == b"data: [DONE]":
+                continue
+            chunk = json.loads(line[6:])
+            if chunk["tokens_predicted"] > 0:
+                first_cancel_chunk = chunk
+                break
+        assert first_cancel_chunk is not None
+        assert first_cancel_chunk["stop"] is False
+        assert len(first_cancel_chunk["tokens"]) == 1
+        assert first_cancel_chunk["tokens_evaluated"] + cancel_request["n_predict"] < server.n_ctx // server.n_slots
+
+        survivor_request = {
+            "prompt": "This overlapping request must survive another client's cancellation:",
+            "id_slot": 1,
+            "n_predict": 128,
+            "ignore_eos": True,
+            "cache_prompt": False,
+        }
+        survivor_future = executor.submit(server.make_request, "POST", "/completion", survivor_request)
+        deadline = time.time() + 10
+        while True:
+            slots_response = server.make_request("GET", "/slots")
+            slots = {slot["id"]: slot for slot in slots_response.body}
+            if slots[0]["is_processing"] and slots[1]["is_processing"]:
+                break
+            assert time.time() < deadline
+            time.sleep(0.01)
+        cancel_response.close()
+
+        deadline = time.time() + 10
+        while True:
+            slots_response = server.make_request("GET", "/slots")
+            slots = {slot["id"]: slot for slot in slots_response.body}
+            if not slots[0]["is_processing"]:
+                break
+            assert time.time() < deadline
+            time.sleep(0.01)
+
+        survivor = survivor_future.result(timeout=60)
+
+        assert survivor.status_code == 200
+        assert survivor.body["id_slot"] == 1
+        assert survivor.body["stop"] is True
+
+        reused = server.make_request("POST", "/completion", data=reference_request)
+        assert reused.status_code == 200
+        assert reused.body["id_slot"] == 0
+        assert reused.body["tokens"] == reference.body["tokens"]
+        assert reused.body["content"] == reference.body["content"]
+
+        slots_response = server.make_request("GET", "/slots")
+        assert slots_response.status_code == 200
+        assert all(slot["is_processing"] is False for slot in slots_response.body)
+    finally:
+        if cancel_response is not None:
+            cancel_response.close()
+        if survivor_future is not None and not survivor_future.done():
+            server.stop()
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+        server.stop()
+
+
+def test_cancel_request_with_ctx_shift():
+    global server
+    server.n_ctx = 2048
+    server.n_slots = 2
+    server.server_continuous_batching = True
+    server.server_slots = True
+    server.enable_ctx_shift = True
+    server.start()
+    # context shift keeps the generation running until the request is cancelled
     try:
         server.make_request("POST", "/completion", data={
             "prompt": "I believe the meaning of life is",
         }, timeout=0.1)
     except requests.exceptions.ReadTimeout:
         pass # expected
-    # make sure the slot is free
-    time.sleep(2)
-    res = server.make_request("GET", "/slots")
-    assert res.body[0]["is_processing"] == False
+    # the slot is freed once the server notices the closed connection
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        res = server.make_request("GET", "/slots")
+        if not res.body[0]["is_processing"]:
+            return
+        time.sleep(0.1)
+    raise AssertionError("slot is still processing after the request was cancelled")
 
 
 # this test exercises the host-memory prompt cache
@@ -689,3 +800,81 @@ def test_completion_prompt_cache():
         assert "prompt_n" in timings and timings["prompt_n"] + timings["cache_n"] == n_prompt
         assert "predicted_n" in timings and timings["predicted_n"] == n_predict
         assert "tokens" in res.body and isinstance(res.body["tokens"], list)
+
+
+# a slot that switched to an unrelated prompt must not restore a context checkpoint of the previous one
+def test_completion_checkpoint_after_unrelated_prompt():
+    global server
+    server = ServerPreset.tinygemma3()
+    server.n_slots = 1
+    server.cache_ram = 0
+    server.temperature = 0.0
+    server.start()
+
+    def tokenize(content):
+        res = server.make_request("POST", "/tokenize", data={"content": content})
+        assert res.status_code == 200
+        return res.body["tokens"]
+
+    def top_logprobs(prompt, cache_prompt):
+        res = server.make_request("POST", "/completion", data={
+            "prompt": prompt,
+            "n_predict": 1,
+            "n_probs": 5,
+            "cache_prompt": cache_prompt,
+        })
+        assert res.status_code == 200
+        return [(p["id"], p["logprob"]) for p in res.body["completion_probabilities"][0]["top_logprobs"]]
+
+    tokens = tokenize("Purple elephants quietly compose sonnets about tax law")
+    expected = top_logprobs(tokens[:2], False)
+
+    # 5 tokens: the checkpoint 4 tokens before the end of the prompt holds only its first token
+    top_logprobs(tokenize("The quick brown fox jumps over the lazy dog")[:5], True)
+    top_logprobs(tokens[:1], True)
+    actual = top_logprobs(tokens[:2], True)
+
+    assert [tid for tid, _ in actual] == [tid for tid, _ in expected]
+    for (_, lp), (_, lp_expected) in zip(actual, expected):
+        assert lp == pytest.approx(lp_expected, abs=1e-3)
+
+
+# a restored context checkpoint must be kept for the next request that shares the same prefix
+def test_completion_checkpoint_kept_after_restore():
+    global server
+    server = ServerPreset.tinygemma3()
+    server.n_slots = 1
+    server.n_batch = 16
+    server.n_ubatch = 16
+    server.cache_ram = 0
+    server.temperature = 0.0
+    server.start()
+
+    def tokenize(content):
+        res = server.make_request("POST", "/tokenize", data={"content": content})
+        assert res.status_code == 200
+        return res.body["tokens"]
+
+    def cache_n(prompt):
+        res = server.make_request("POST", "/completion", data={
+            "prompt": prompt,
+            "n_predict": 1,
+            "cache_prompt": True,
+        })
+        assert res.status_code == 200
+        return res.body["timings"]["cache_n"]
+
+    prefix = tokenize("Purple elephants quietly compose sonnets about tax law in the moonlight")
+    suffixes = [tokenize(s) for s in [
+        "The quick brown fox jumps over the lazy dog while the farmer counts his sheep and the sun slowly sets behind the distant hills",
+        "Seven tiny robots repaired the broken lighthouse lens before the storm arrived, then danced on the rocks until the morning tide came in",
+        "Green apples rolled down the hill toward the river, where a curious otter collected them one by one and stacked them on a flat stone",
+    ]]
+
+    # 4 tokens: the checkpoint 4 tokens before the end of the prompt holds exactly the prefix
+    cache_n(prefix + suffixes[0][:4])
+
+    # suffixes longer than n_ubatch + 4: no new checkpoint within the prefix, only the restored one can be reused
+    for suffix in suffixes[1:]:
+        assert len(suffix) > server.n_ubatch + 4
+        assert cache_n(prefix + suffix) == len(prefix) - 1

@@ -77,6 +77,7 @@ __global__ void fwht_cuda_block(const T * src, float * dst, const int64_t n_rows
     const int64_t r = blockIdx.x;
     if (r >= n_rows) {
         return;
+
     }
 
     src += r * N;
@@ -192,6 +193,7 @@ static bool ggml_cuda_op_fwht_impl(ggml_backend_cuda_context & ctx, const ggml_t
 
         switch (n) {
             case 1024:
+                // N>=1024 (Bonsai PQ2_0) uses the typed block kernel; the warp kernel spills.
                 ggml_cuda_kernel_launch(fwht_cuda_block<1024, nt, T>, launch_params_w, src_d, dst_d, rows, scale);
                 return true;
             case 2048:

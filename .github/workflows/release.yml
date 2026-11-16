@@ -176,6 +176,8 @@ jobs:
             os: ubuntu-24.04-arm
           - build: 's390x'
             os: ubuntu-24.04-s390x
+          - build: '26.04-s390x'
+            os: ubuntu-26.04-s390x
 
     runs-on: ${{ matrix.os }}
 
@@ -200,7 +202,7 @@ jobs:
         id: depends
         run: |
           sudo apt-get update
-          sudo apt-get install build-essential libssl-dev
+          sudo apt-get install -y build-essential libssl-dev
 
       - name: Toolchain workaround (GCC 14)
         if: ${{ contains(matrix.os, 'ubuntu-24.04') }}
@@ -230,7 +232,7 @@ jobs:
           cmake --build build --config Release -j $(nproc)
 
       - name: ccache-clear
-        if: ${{ matrix.build != 's390x' }}
+        if: ${{ !contains(matrix.os, 's390x') }}
         uses: ./.github/actions/ccache-clear
         with:
           key: release-${{ matrix.os }}-cpu
@@ -1227,6 +1229,66 @@ jobs:
         with:
           path: llama-bin-win-hip-${{ matrix.name }}-x64.zip
           name: llama-bin-win-hip-${{ matrix.name }}-x64.zip
+
+  ubuntu-26-zdnn:
+    needs: [check-release, get-version]
+    if: ${{ needs.check-release.outputs.should_release == 'true' }}
+
+    runs-on: ubuntu-26.04-s390x
+
+    steps:
+      - name: Clone
+        id: checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: "tools/ui/package-lock.json"
+
+      - name: Dependencies
+        id: depends
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libssl-dev libzdnn-dev
+
+      - name: Build
+        id: cmake_build
+        run: |
+          cmake -B build \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_VXE=ON \
+            -DGGML_ZDNN=ON \
+            -DCMAKE_C_FLAGS="-march=arch15" \
+            -DCMAKE_CXX_FLAGS="-march=arch15" \
+            -DLLAMA_FATAL_WARNINGS=ON \
+            -DHF_UI_VERSION=${{ needs.get-version.outputs.ui_version }} \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        id: pack_artifacts
+        run: |
+          cp LICENSE ./build/bin/
+          tar -czvf llama-${{ steps.tag.outputs.name }}-bin-ubuntu-zdnn-s390x.tar.gz --transform "s,^\.,llama-${{ steps.tag.outputs.name }}," -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-ubuntu-zdnn-s390x.tar.gz
+          name: llama-bin-ubuntu-zdnn-s390x.tar.gz
 
   ios-xcode:
     needs: [check-release, get-version]

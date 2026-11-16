@@ -8,6 +8,8 @@ llama.cpp supports speculative decoding, a technique that can significantly acce
 
 The `llama-server` application supports several implementations of speculative decoding. An implementation with draft model can be mixed with an implementation without draft model.
 
+Fork note (atomic-llama-cpp-turboquant): `--spec-type mtp` and `--spec-type nextn` are aliases of `draft-mtp`, and `--mtp-head FNAME` is an alias of `--spec-draft-model`. Model-specific recipes: [MTP.md](../MTP.md) (Gemma 4 assistant) and [NEXTN.md](../NEXTN.md) (Qwen 3.5/3.6 NextN).
+
 ### Draft Model (`draft`)
 
 A much smaller model (called the _draft model_) generates drafts.
@@ -129,8 +131,9 @@ llama-server -m Qwen3-4B.gguf -md Qwen3-4B-DSpark.gguf \
 
 `--spec-draft-n-max` is clamped to the draft model's trained block size.
 
-`--spec-draft-conf-min P` truncates each drafted block at the first position whose predicted
-acceptance (from the draft's confidence head, if present) falls below `P` (default 0 = disabled).
+`--spec-draft-p-min P` truncates each drafted block at the first position whose predicted
+acceptance (from the draft's confidence head) falls below `P` (default 0 = disabled).
+Values above 0 require a draft with a confidence head.
 
 Currently only drafts with a Qwen3 backbone are supported; support for other backbones
 (e.g. Gemma4) is planned.
@@ -283,6 +286,12 @@ Use exactly one of these options:
 --spec-draft-n-min-adaptive             N
                                         minimum adaptive MTP draft depth; the depth starts here and never drops below it (default: 3)
                                         (env: LLAMA_ARG_SPEC_DRAFT_N_MIN_ADAPTIVE)
+--spec-mtp-rs-planes                    N
+                                        total target recurrent-state planes for draft-mtp, including the current state (default: 0, use spec-draft-n-max + 1)
+                                        (env: LLAMA_ARG_SPEC_MTP_RS_PLANES)
+--spec-draft-n-ubatch                   N
+                                        physical maximum batch size of the draft context, use a smaller value to spare VRAM (default: 0 - same as --n-ubatch)
+                                        (env: LLAMA_ARG_SPEC_DRAFT_N_UBATCH)
 --spec-draft-p-split, --draft-p-split   P
                                         speculative decoding split probability (default: 0.10)
                                         (env: LLAMA_ARG_SPEC_DRAFT_P_SPLIT)
@@ -296,6 +305,18 @@ Use exactly one of these options:
                                         comma-separated list of devices to use for offloading the draft model
                                         (use --list-devices to see available devices)
 ```
+
+#### Capped MTP recurrent planes
+
+`--spec-mtp-rs-planes` applies only to `draft-mtp`. The default value `0` allocates `--spec-draft-n-max + 1` target recurrent-state planes. An explicit value must be in `[2, --spec-draft-n-max + 1]`; a smaller value enables capped replay. Capped replay cannot be combined with Eagle3, DFlash, or DSpark because those modes also control recurrent rollback.
+
+The effective target ubatch is `min(batch-size, ubatch-size)`, or `batch-size` when `ubatch-size` is zero. For capped replay it must be at least `--spec-draft-n-max + 1`. A nonzero draft ubatch override must equal the target ubatch.
+
+Every device selected for the recurrent graph operations must support sparse snapshots. The server rejects an unsupported device layout at startup; it does not move the operations to another device or fall back to CPU.
+
+Plane 0 contains the newest trailing state. The following planes contain older trailing states, and plane `K - 1` preserves the state from before verification. If a verification batch has fewer than `K - 1` tokens, the gap between its trailing states and the reserved input plane remains untouched, including the recorded positions. Rollbacks inside the retained trailing range select a plane directly. A deeper partial acceptance restores the reserved pre-verification plane and replays the full verification batch while writing only the selected boundary.
+
+A sparse post-decode failure invalidates every slot that participated in the batch because their state and position planes were committed together. Per-slot recovery would require a separate pre-decode copy of the same recurrent state.
 
 ### Draft Model CPU Scheduling Parameters
 

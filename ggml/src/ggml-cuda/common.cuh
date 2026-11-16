@@ -52,6 +52,7 @@
 #define GGML_CUDA_CC_VOLTA           700
 #define GGML_CUDA_CC_TURING          750
 #define GGML_CUDA_CC_AMPERE          800
+#define GGML_CUDA_CC_AMPERE_GA10X    860
 #define GGML_CUDA_CC_ORIN            870
 #define GGML_CUDA_CC_ADA_LOVELACE    890
 #define GGML_CUDA_CC_HOPPER          900
@@ -81,6 +82,7 @@
 #define GGML_CUDA_CC_RDNA2      (GGML_CUDA_CC_OFFSET_AMD + 0x1030) // RX 6000, minimum for dp4a
 #define GGML_CUDA_CC_RDNA3      (GGML_CUDA_CC_OFFSET_AMD + 0x1100) // RX 7000, minimum for WMMA
 #define GGML_CUDA_CC_RDNA3_5    (GGML_CUDA_CC_OFFSET_AMD + 0x1150) // AI 370, AI Max 395 laptops.
+#define GGML_CUDA_CC_RDNA4_M    (GGML_CUDA_CC_OFFSET_AMD + 0x1170) // gfx117X
 #define GGML_CUDA_CC_RDNA4      (GGML_CUDA_CC_OFFSET_AMD + 0x1200) // RX 9000
 
 #define GGML_CUDA_CC_IS_AMD(cc)     (cc >= GGML_CUDA_CC_OFFSET_AMD)
@@ -88,8 +90,9 @@
 #define GGML_CUDA_CC_IS_RDNA1(cc)   (cc >= GGML_CUDA_CC_RDNA1 && cc < GGML_CUDA_CC_RDNA2)
 #define GGML_CUDA_CC_IS_RDNA2(cc)   (cc >= GGML_CUDA_CC_RDNA2 && cc < GGML_CUDA_CC_RDNA3)
 #define GGML_CUDA_CC_IS_RDNA3_0(cc) (cc >= GGML_CUDA_CC_RDNA3 && cc < GGML_CUDA_CC_RDNA3_5)
-#define GGML_CUDA_CC_IS_RDNA3_5(cc) (cc >= GGML_CUDA_CC_RDNA3_5 && cc < GGML_CUDA_CC_RDNA4)
+#define GGML_CUDA_CC_IS_RDNA3_5(cc) (cc >= GGML_CUDA_CC_RDNA3_5 && cc < GGML_CUDA_CC_RDNA4_M)
 #define GGML_CUDA_CC_IS_RDNA3(cc)   (GGML_CUDA_CC_IS_RDNA3_0(cc) || GGML_CUDA_CC_IS_RDNA3_5(cc))
+#define GGML_CUDA_CC_IS_RDNA4_M(cc) (cc >= GGML_CUDA_CC_RDNA4_M && cc < GGML_CUDA_CC_RDNA4)
 #define GGML_CUDA_CC_IS_RDNA4(cc)   (cc >= GGML_CUDA_CC_RDNA4)
 #define GGML_CUDA_CC_IS_GCN_APU(cc) ((cc) == GGML_CUDA_CC_GFX909 || (cc) == GGML_CUDA_CC_GFX90C)
 #define GGML_CUDA_CC_IS_GCN(cc)     ((cc > GGML_CUDA_CC_OFFSET_AMD && cc < GGML_CUDA_CC_CDNA1) || GGML_CUDA_CC_IS_GCN_APU(cc))
@@ -276,9 +279,17 @@ static const char * cu_get_error_str(CUresult err) {
 #define AMD_MFMA_AVAILABLE
 #endif // defined(GGML_USE_HIP) && defined(CDNA) && !defined(GGML_HIP_NO_MMQ_MFMA)
 
-#if defined(GGML_USE_HIP) && (defined(RDNA4) || defined(RDNA3))
+#if defined(GGML_USE_HIP) && (defined(RDNA4) || defined(RDNA4_M))
+#define AMD_WMMA_128B_AVAILABLE
+#endif // defined(GGML_USE_HIP) && (defined(RDNA4) || defined(RDNA4_M))
+
+#if defined(GGML_USE_HIP) && defined(RDNA3)
+#define AMD_WMMA_256B_AVAILABLE
+#endif // defined(GGML_USE_HIP) && defined(RDNA3)
+
+#if defined(AMD_WMMA_128B_AVAILABLE) || defined(AMD_WMMA_256B_AVAILABLE)
 #define AMD_WMMA_AVAILABLE
-#endif // defined(GGML_USE_HIP) && defined(RDNA4)
+#endif // defined(AMD_WMMA_128B_AVAILABLE) || defined(AMD_WMMA_256B_AVAILABLE)
 
 // The Volta instructions are in principle available on Turing or newer but they are effectively unusable:
 #if !defined(GGML_USE_HIP) && __CUDA_ARCH__ == GGML_CUDA_CC_VOLTA
@@ -325,7 +336,7 @@ static bool fast_fp16_hardware_available(const int cc) {
 // To be used for feature selection of external libraries, e.g. cuBLAS.
 static bool fp16_mma_hardware_available(const int cc) {
     return (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_VOLTA) ||
-        GGML_CUDA_CC_IS_CDNA(cc) || GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc) ||
+        GGML_CUDA_CC_IS_CDNA(cc) || GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4_M(cc) || GGML_CUDA_CC_IS_RDNA4(cc) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2);
 }
 
@@ -354,7 +365,7 @@ static bool amd_mfma_available(const int cc) {
 }
 
 static bool amd_wmma_available(const int cc) {
-    return (GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_RDNA3(cc));
+    return GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4_M(cc) || GGML_CUDA_CC_IS_RDNA4(cc);
 }
 
 static bool volta_mma_available(const int cc) {
@@ -712,7 +723,7 @@ static __device__ __forceinline__ int ggml_cuda_dp4a(const int a, const int b, i
 #if defined(GGML_USE_HIP)
 #if defined(CDNA) || defined(RDNA2) || defined(__gfx906__)
     c = __builtin_amdgcn_sdot4(a, b, c, false);
-#elif defined(RDNA3) || defined(RDNA4)
+#elif defined(RDNA3) || defined(RDNA4_M) || defined(RDNA4)
     c = __builtin_amdgcn_sudot4( true, a, true, b, c, false);
 #elif defined(RDNA1) || defined(__gfx900__)
     int tmp1;
@@ -757,9 +768,9 @@ static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const float2 v
     acc += v.y*u.y;
 }
 
-#if defined(GGML_USE_HIP) && (defined(RDNA2) || defined(RDNA3) || defined(RDNA4) || defined(__gfx906__) || defined(CDNA))
+#if defined(GGML_USE_HIP) && (defined(RDNA2) || defined(RDNA3) || defined(RDNA4_M) || defined(RDNA4) || defined(__gfx906__) || defined(CDNA))
 #define V_DOT2_F32_F16_AVAILABLE
-#endif // defined(GGML_USE_HIP) && (defined(RDNA2) || defined(RDNA3) || defined(RDNA4) || defined(__gfx906__) || defined(CDNA))
+#endif // defined(GGML_USE_HIP) && (defined(RDNA2) || defined(RDNA3) || defined(RDNA4_M) || defined(RDNA4) || defined(__gfx906__) || defined(CDNA))
 
 static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const half2 v, const half2 u) {
 #ifdef V_DOT2_F32_F16_AVAILABLE
@@ -881,6 +892,7 @@ static __device__ __forceinline__ uint8_t ggml_cuda_fp32_to_ue4m3(float x) {
     const __nv_fp8_e4m3 xf(x);
     return xf.__x;
 #else
+     GGML_UNUSED(x);
      NO_DEVICE_CODE; // Used only for NVFP4 Scales for Activations, only for Blackwell
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
@@ -994,6 +1006,100 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q2_0> {
     static constexpr int qi = QI2_0;
     static constexpr int bs = sizeof(block_q2_0);
 };
+
+// ik_llama.cpp IQ_K types: mmvq treats a QK_K super-block as 8 chunks of 32 (one q8_1 block each)
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ2_K> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_K/32;
+    static constexpr int bs = sizeof(block_iq2_k);
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ3_K> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_K/32;
+    static constexpr int bs = sizeof(block_iq3_k);
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ4_K> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_K/32;
+    static constexpr int bs = sizeof(block_iq4_k);
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ5_K> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_K/32;
+    static constexpr int bs = sizeof(block_iq5_k);
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ6_K> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_K/32;
+    static constexpr int bs = sizeof(block_iq6_k);
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_TQ3_4S> {
+    static constexpr int qk = QK_TQ3_0;
+    static constexpr int qr = 1;
+    static constexpr int qi = 1;
+    static constexpr int bs = sizeof(block_tq3_4s);
+};
+
+// PQ2_0 / PTQ1_0 (from PrismML llama.cpp fork)
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_PQ2_0> {
+    static constexpr int qk = QK_PQ2_0;
+    static constexpr int qr = QR_PQ2_0;
+    static constexpr int qi = QI_PQ2_0;
+    static constexpr int bs = sizeof(block_pq2_0);
+};
+
+// PTQ1_0 packs trits base-3, five per byte, so element order is not positional. It
+// follows the CPU codec exactly: a 16-byte chunk of qs, then an 8-byte chunk, then qh
+// at four trits per byte. Trits come out by the base-3 remainder recurrence
+// t = (v*3)>>8 with v = (v*3)&0xFF, two integer ops per step and no table.
+static __device__ __forceinline__ int ptq1_0_trit(const block_ptq1_0 * x, const int e) {
+    uint8_t b;
+    int n;
+    if (e < 80) {                       // qs[0..15], chunk of 16
+        b = x->qs[e & 15];              n = e >> 4;
+    } else if (e < 120) {               // qs[16..23], chunk of 8
+        const int t = e - 80;
+        b = x->qs[16 + (t & 7)];        n = t >> 3;
+    } else {                            // qh[0..1], four trits per byte
+        const int t = e - 120;
+        b = x->qh[t & 1];               n = t >> 1;
+    }
+
+    uint32_t v = b;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        if (i < n) {
+            v = (v * 3) & 0xFF;
+        }
+    }
+    return (int) ((v * 3) >> 8) - 1;
+}
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_PTQ1_0> {
+    static constexpr int qk = QK_PTQ1_0;
+    static constexpr int qr = QR_PTQ1_0;
+    static constexpr int qi = QI_PTQ1_0;
+    static constexpr int bs = sizeof(block_ptq1_0);
+};
+
 
 template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q4_0> {
@@ -1179,6 +1285,7 @@ struct ggml_cuda_device_info {
         size_t  vmm_granularity;                // granularity of virtual memory
         size_t  total_vram;
         int     warp_size;                      // Number of threads in a dispatch
+        int     max_grid_size[3];                // Maximum grid dimensions
         bool    supports_cooperative_launch;    // whether cooperative launch is supported
         int     physical_device;                // backing physical CUDA device for this (virtual) device
         int     physical_share_count;           // number of (virtual) devices sharing this device's physical GPU
@@ -1205,6 +1312,7 @@ struct ggml_cuda_pool {
 
     virtual void * alloc(size_t size, size_t * actual_size) = 0;
     virtual void free(void * ptr, size_t size) = 0;
+    virtual size_t trim() { return 0; }
 };
 
 template<typename T>
@@ -1264,29 +1372,39 @@ struct ggml_tensor_extra_gpu {
 #define USE_CUDA_GRAPH
 #endif
 
+class ggml_cuda_moe_graph_plan;
+
 struct ggml_cuda_graph {
+    std::shared_ptr<ggml_cuda_moe_graph_plan> moe_graph_plan;
+    const void * moe_coverage_nodes = nullptr;
+    uint64_t moe_coverage_epoch = 0;
+    uint64_t moe_coverage_mmid_fingerprint = 0;
+    uint64_t moe_resource_fingerprint = 0;
+    uint64_t moe_registry_generation = 0;
+    std::vector<std::weak_ptr<void>> moe_resource_witnesses;
+    int32_t moe_coverage_n_nodes = 0;
+    uint32_t moe_coverage_mmid_count = 0;
+    int64_t last_used_time = 0;
 #ifdef USE_CUDA_GRAPH
     ~ggml_cuda_graph() {
-        if (instance != nullptr) {
+        for (cudaGraphExec_t instance : instances) {
             CUDA_CHECK(cudaGraphExecDestroy(instance));
         }
-        if (graph != nullptr) {
-            CUDA_CHECK(cudaGraphDestroy(graph));
-        }
     }
-    cudaGraph_t graph = nullptr;
-    cudaGraphExec_t instance = nullptr;
+    // the ggml graph is captured as a series of CUDA graphs, so the GPU can run one chunk while the next is enqueued
+    std::vector<cudaGraphExec_t> instances;
     size_t num_nodes = 0;
     std::vector<cudaGraphNode_t> nodes;
     bool disable_due_to_gpu_arch = false;
     bool warmup_complete = false;
     uint64_t uid = 0;
-    int64_t last_used_time = 0;
+    uint64_t execution_semantic_key = 0;
     struct node_properties {
         ggml_tensor node;
         void *   node_src_data_ptrs[GGML_MAX_SRC];
         int64_t  node_src_ne[GGML_MAX_SRC][GGML_MAX_DIMS];
         size_t   node_src_nb[GGML_MAX_SRC][GGML_MAX_DIMS];
+        uint64_t kv_stream_generation;
     };
     std::vector<node_properties> node_props;
 
@@ -1448,41 +1566,51 @@ struct ggml_cuda_stream_context {
     }
 };
 
+class ggml_cuda_moe_grouped_context;
+struct ggml_cuda_moe_ids_cache_state;
+
 struct ggml_backend_cuda_context {
     int device;
     std::string name;
     cudaEvent_t copy_event = nullptr;
+    bool decode_boundary_overlap = false;
+    std::once_flag moe_grouped_context_once;
+    ggml_cuda_moe_grouped_context * moe_grouped_context = nullptr;
+    std::vector<std::unique_ptr<ggml_backend_cuda_context>> moe_router_contexts;
+    std::unique_ptr<ggml_cuda_moe_ids_cache_state> moe_ids_cache;
 
-    cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };
-    cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {nullptr};
-    void * cublas_workspaces[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {nullptr};
-    size_t cublas_workspace_sizes[GGML_CUDA_MAX_DEVICES] = {0};
+    cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {};
+    cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {};
+    void * cublas_workspaces[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {};
+    size_t cublas_workspace_sizes[GGML_CUDA_MAX_DEVICES] = {};
 
     int curr_stream_no = 0;
 
-    // [TAG_FA_F16_CUDA_GRAPHS] Set once per compute call in ggml_backend_cuda_graph_compute: true
-    // when the current cgraph is graph-enabled AND graph-compatible (i.e. it will be captured).
-    // On HIP the flash-attention launcher reads this to place its f16 KV-dequant temp buffers in the
-    // capture-safe memory pool instead of raw cudaMalloc/cudaFree, which are illegal while a CUDA
-    // graph is being captured. Left false for graph-incompatible graphs so those keep the raw
-    // release-after-use path (avoids the legacy pool retaining the temp; ref llama.cpp #22107).
+
+    // Set once per compute call when the current cgraph will be captured.
+    // HIP flash-attention reads this so f16 KV-dequant temps use the capture-safe pool.
     bool fa_f16_use_pool = false;
 
-#ifdef USE_CUDA_GRAPH
-    // Map from first_node_ptr to cuda_graph - allows multiple graphs per context
-    // when the computation is split across CPU/GPU (e.g., with --n-cpu-moe)
-    std::unordered_map<const void *, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
+    std::unordered_map<uint64_t, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
 
-    int64_t last_graph_eviction_sweep = 0;
+    static const size_t max_cuda_graphs = 64;
 
-    ggml_cuda_graph * cuda_graph(const void * first_node_ptr) {
+    int64_t next_graph_eviction_time = 0;
+    int64_t last_graph_use_time = 0;
+
+    ggml_cuda_graph * cuda_graph(uint64_t graph_key) {
         const int64_t time_now = ggml_time_us();
+        // Give all cached graphs 10s to be reused after an idle period, without updating each graph.
+        if (!cuda_graphs.empty() && time_now - last_graph_use_time >= 10'000'000) {
+            next_graph_eviction_time = time_now + 10'000'000;
+        }
+        last_graph_use_time = time_now;
 
-        // sweep every 5s, evicting cuda graphs unused for >=10s
-        if (time_now - last_graph_eviction_sweep >= 5'000'000) {
-            last_graph_eviction_sweep = time_now;
+        // Sweep every 5s during active use, evicting graphs unused for at least 10s.
+        if (time_now >= next_graph_eviction_time) {
+            next_graph_eviction_time = time_now + 5'000'000;
             for (auto it = cuda_graphs.begin(); it != cuda_graphs.end(); ) {
-                if (time_now - it->second->last_used_time >= 10'000'000) {
+                if (it->first != graph_key && time_now - it->second->last_used_time >= 10'000'000) {
                     it = cuda_graphs.erase(it);
                 } else {
                     ++it;
@@ -1490,14 +1618,27 @@ struct ggml_backend_cuda_context {
             }
         }
 
-        auto it = cuda_graphs.find(first_node_ptr);
+        auto it = cuda_graphs.find(graph_key);
         if (it == cuda_graphs.end()) {
-            it = cuda_graphs.emplace(first_node_ptr, std::make_unique<ggml_cuda_graph>()).first;
+            while (cuda_graphs.size() >= max_cuda_graphs) {
+                auto lru = cuda_graphs.begin();
+                for (auto c = cuda_graphs.begin(); c != cuda_graphs.end(); ++c) {
+                    if (c->second->last_used_time < lru->second->last_used_time) {
+                        lru = c;
+                    }
+                }
+                cuda_graphs.erase(lru);
+            }
+            it = cuda_graphs.emplace(graph_key, std::make_unique<ggml_cuda_graph>()).first;
         }
         it->second->last_used_time = time_now;
         return it->second.get();
     }
 
+    void certify_moe_graph(ggml_cgraph * cgraph);
+    bool recover_moe_graph(ggml_cgraph * cgraph, ggml_cuda_graph * graph);
+
+#ifdef USE_CUDA_GRAPH
     // Check if any CUDA graph is enabled for this context (used by kernels that need to know
     // if graphs are in use without having access to the specific graph key)
     bool any_cuda_graph_enabled() const {
@@ -1512,7 +1653,7 @@ struct ggml_backend_cuda_context {
     // Check if any CUDA graph has an instance for this context
     bool any_cuda_graph_has_instance() const {
         for (const auto & [key, graph] : cuda_graphs) {
-            if (graph && graph->instance != nullptr) {
+            if (graph && !graph->instances.empty()) {
                 return true;
             }
         }
@@ -1520,10 +1661,7 @@ struct ggml_backend_cuda_context {
     }
 #endif // USE_CUDA_GRAPH
 
-    explicit ggml_backend_cuda_context(int device) :
-        device(device),
-        name(GGML_CUDA_NAME + std::to_string(device)) {
-    }
+    explicit ggml_backend_cuda_context(int device);
 
     ggml_cuda_stream_context concurrent_stream_context;
 
@@ -1562,11 +1700,11 @@ struct ggml_backend_cuda_context {
     // pool
     std::unique_ptr<ggml_cuda_pool> pools[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS];
 
-    static std::unique_ptr<ggml_cuda_pool> new_pool_for_device(int device, int stream_no);
+    static std::unique_ptr<ggml_cuda_pool> new_pool_for_device(ggml_backend_cuda_context & ctx, int device, int stream_no);
 
     ggml_cuda_pool & pool(int device) {
         if (pools[device][curr_stream_no] == nullptr) {
-            pools[device][curr_stream_no] = new_pool_for_device(device, curr_stream_no);
+            pools[device][curr_stream_no] = new_pool_for_device(*this, device, curr_stream_no);
         }
         return *pools[device][curr_stream_no];
     }
@@ -1579,11 +1717,13 @@ struct ggml_backend_cuda_context {
 struct ggml_cuda_mm_fusion_args_host {
     const ggml_tensor * x_bias = nullptr;
     const ggml_tensor * gate = nullptr;
+    const ggml_tensor * gate_ids = nullptr;
     const ggml_tensor * gate_bias = nullptr;
     const ggml_tensor * x_scale = nullptr;
     const ggml_tensor * gate_scale = nullptr;
     ggml_glu_op glu_op;
     float glu_limit = 0.0f;
+    ggml_prec prec_src1 = GGML_PREC_UNDEFINED; // src1 precision requested by the fused MUL_MATs (MMQ)
     const ggml_tensor * shared_up = nullptr;
     const ggml_tensor * shared_gate = nullptr;
     ggml_tensor * shared_dst = nullptr;
@@ -1591,6 +1731,7 @@ struct ggml_cuda_mm_fusion_args_host {
 struct ggml_cuda_mm_fusion_args_device {
     const void * x_bias = nullptr;
     const void * gate = nullptr;
+    const int32_t * gate_ids = nullptr;
     const void * gate_bias = nullptr;
     const void * x_scale = nullptr;
     const void * gate_scale = nullptr;

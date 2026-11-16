@@ -1,11 +1,13 @@
 #pragma once
 
-#include "llama.h"
 #include "llama-graph.h"
+#include "llama.h"
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <functional>
+#include <vector>
 
 struct llama_ubatch;
 
@@ -14,10 +16,39 @@ class llama_batch_allocr;
 class llama_io_write_i;
 class llama_io_read_i;
 
+struct llama_memory_placement_options {
+    bool cpu_pinned = false;
+    uint32_t gpu_resident_layers = 0;
+    bool recurrent_offload = false;
+};
+
+class llama_kv_cache;
+
+// A sub-cache eligible for the shared CUDA phase-arena streaming runtime
+// (block KV streaming - see llama-context.cpp's kv_stream_switch_phase and
+// llama-kv-cache.cpp's kv_stream_runtime). Most memory types have none; a
+// wrapper holding more than one llama_kv_cache (iSWA, DSA, MSA, DSV4)
+// returns whichever of its sub-cache(s) actually got a streaming runtime
+// attached - see llama_memory_i::get_kv_stream_targets().
+struct llama_kv_stream_target {
+    llama_kv_cache * cache = nullptr;
+};
+
+// The per-ubatch live state of one streaming target, used to drive the
+// phase-switch/adapt feedback loop each step - see
+// llama_memory_context_i::get_kv_stream_active_targets().
+struct llama_kv_stream_active_target {
+    llama_kv_cache * cache = nullptr;
+    uint32_t         n_kv  = 0;
+};
+
 struct llama_memory_params {
     // kv cache
     ggml_type type_k;
     ggml_type type_v;
+    uint64_t  kv_stream_stage_bytes;
+    void *    kv_stream_phase_arena;
+    uint64_t  kv_stream_maximum_pool_bytes;
 
     // use full-size SWA cache
     bool swa_full;
@@ -25,6 +56,36 @@ struct llama_memory_params {
     llama_context_type ctx_type;
 
     llama_memory_t mem_other;
+
+    // only simulate the memory allocations
+    bool no_alloc;
+};
+
+// the tensor contexts and backend buffers of a memory instance
+// with no_alloc, dummy buffers are attached instead of allocating the tensor data, so the memory use can still be measured
+struct llama_memory_bufs {
+    explicit llama_memory_bufs(bool no_alloc) : no_alloc(no_alloc) {}
+
+    // allocate the tensors of ctx on buft, or attach a dummy buffer if no_alloc is set
+    // returns the buffer, for logging
+    ggml_backend_buffer_t emplace(ggml_context_ptr ctx, ggml_backend_buffer_type_t buft, const char * name);
+
+    // the memory used by the tensors: the buffer sizes, or the simulated sizes if no_alloc is set
+    std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const;
+
+    // allocate a single ctx buffer - for the memory instances that keep their own buffer layout
+    static ggml_backend_buffer_ptr alloc_buf(ggml_context * ctx, ggml_backend_buffer_type_t buft, bool no_alloc, const char * name);
+
+    bool empty() const { return bufs.empty(); }
+
+    auto begin()       { return bufs.begin(); }
+    auto end()         { return bufs.end();   }
+    auto begin() const { return bufs.begin(); }
+    auto end()   const { return bufs.end();   }
+
+    std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> bufs;
+
+    const bool no_alloc;
 };
 
 enum llama_memory_status {
@@ -68,11 +129,24 @@ struct llama_memory_context_i {
     // TurboQuant: get rotation tensors for pre-rotate-queries optimization
     // Returns null for non-turbo memory types. Override in KV cache contexts.
     virtual ggml_tensor * get_turbo_rot_forward() const { return nullptr; }
+
     virtual ggml_tensor * get_turbo_rot_inverse() const { return nullptr; }
 
     // TurboQuant InnerQ: get per-channel scale_inv tensor for Q/V equalization
     // Returns nullptr when InnerQ is not active. Override in KV cache contexts.
     virtual ggml_tensor * get_turbo_innerq_scale_inv() const { return nullptr; }
+
+    // Maximum physical attention-KV extent needed by every ubatch prepared in this context. Zero means the memory type does not expose a bounded view.
+    virtual uint32_t get_attn_reserve_n_kv() const { return 0; }
+
+    // Block KV streaming: this ubatch's live state for whichever of this
+    // memory's sub-cache(s) have a streaming runtime attached. Empty for
+    // every memory type that doesn't stream (the default), or hasn't been
+    // wired up to yet. Drives the per-ubatch phase-switch/adapt call in
+    // llama_context::process_ubatch - see llama-context.cpp.
+    virtual bool has_kv_stream_targets() const { return false; }
+
+    virtual std::vector<llama_kv_stream_active_target> get_kv_stream_active_targets() const { return {}; }
 };
 
 using llama_memory_context_ptr = std::unique_ptr<llama_memory_context_i>;
@@ -94,6 +168,7 @@ struct llama_memory_i {
     // split the input batch into a set of ubatches and verify that they can fit into the cache
     // return a context object containing the ubatches and memory state required to process them
     // check the llama_memory_context_i::get_status() for the result
+    // embd_all: keep all the tokens of a sequence in one ubatch (all tokens are output, or the attention is non-causal)
     virtual llama_memory_context_ptr init_batch(
             llama_batch_allocr & balloc,
             uint32_t n_ubatch,
@@ -102,12 +177,36 @@ struct llama_memory_i {
     // simulate full cache, used for allocating worst-case compute buffers
     virtual llama_memory_context_ptr init_full() = 0;
 
+    // Simulate an attention cache whose graph-visible physical extent is bounded by n_kv. Unsupported memory types retain full reservation.
+    virtual llama_memory_context_ptr init_reserve(uint32_t n_kv) {
+        GGML_UNUSED(n_kv);
+        return init_full();
+    }
+
+    // Nonzero only when init_reserve() implements a bounded attention layout.
+    virtual uint32_t get_attn_reserve_capacity() const { return 0; }
+
     // prepare for any pending memory updates, such as shifts, copies, etc.
     // status == LLAMA_MEMORY_STATUS_NO_UPDATE if there is nothing to update
     virtual llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) = 0;
 
     // getters
     virtual bool get_can_shift() const = 0;
+
+    // Allow a deferred token value and removal of the last decoded position.
+    virtual bool can_decode_sampled() const { return false; }
+    virtual void seq_set_last_token(llama_seq_id seq_id, llama_pos pos, llama_token token) {
+        GGML_UNUSED(seq_id);
+        GGML_UNUSED(pos);
+        GGML_UNUSED(token);
+    }
+
+    virtual bool recurrent_sparse_snapshots_supported() const { return false; }
+    virtual bool recurrent_set_sparse_snapshot_mode(bool, int32_t) { return false; }
+
+    virtual bool get_supports_partial_kv() const {
+        return false;
+    }
 
     //
     // ops
@@ -116,11 +215,11 @@ struct llama_memory_i {
     // if data == true, the data buffers will also be cleared together with the metadata
     virtual void clear(bool data) = 0;
 
-    virtual bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) = 0;
-    virtual void seq_cp  (llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) = 0;
-    virtual void seq_keep(llama_seq_id seq_id) = 0;
-    virtual void seq_add (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1, llama_pos shift) = 0;
-    virtual void seq_div (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1, int d) = 0;
+    virtual bool seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1)                              = 0;
+    virtual void seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) = 0;
+    virtual void seq_keep(llama_seq_id seq_id)                                                        = 0;
+    virtual void seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos shift)            = 0;
+    virtual void seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d)                      = 0;
 
     virtual llama_pos seq_pos_min(llama_seq_id seq_id) const = 0;
     virtual llama_pos seq_pos_max(llama_seq_id seq_id) const = 0;
@@ -131,8 +230,23 @@ struct llama_memory_i {
     // state write/read
     //
 
-    virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const = 0;
-    virtual void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) = 0;
+    virtual void state_write(llama_io_write_i &    io,
+                             llama_seq_id          seq_id = -1,
+                             llama_state_seq_flags flags  = 0) const                                          = 0;
+    virtual void state_read(llama_io_read_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) = 0;
+
+    // Block KV streaming: the sub-cache(s) of this memory object, if any,
+    // that a CUDA phase-arena streaming runtime should be attached to.
+    // Empty for every memory type that doesn't support streaming (the
+    // default). A plain llama_kv_cache returns itself once it has a
+    // runtime; a multi-cache wrapper (iSWA, DSA, MSA, DSV4) returns
+    // whichever of its sub-cache(s) are the large, context-length-scaled
+    // ones worth streaming - narrow/bounded indexer or compression-state
+    // structures stay always-resident and are never returned here. See
+    // llama-context.cpp's kv_stream_switch_phase and the bootstrap pre-scan.
+    virtual bool has_kv_stream_targets() const { return false; }
+
+    virtual std::vector<llama_kv_stream_target> get_kv_stream_targets() const { return {}; }
 };
 
 using llama_memory_ptr = std::unique_ptr<llama_memory_i>;

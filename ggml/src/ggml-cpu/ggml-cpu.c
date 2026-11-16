@@ -8,6 +8,8 @@
 #include "ggml-impl.h"
 #include "quants.h"
 #include "ggml-quants.h"
+#include "ggml-iqk-quants.h"
+#include "iqk-simd.h"
 #include "ggml-threading.h"
 #include "unary-ops.h"
 #include "binary-ops.h"
@@ -88,6 +90,9 @@ float ggml_table_f32_e8m0_half[1 << 8];
 
 // precomputed f32 table for ue4m3 (1 KB) (simd-mappings.h)
 float ggml_table_f32_ue4m3[1 << 8];
+
+// Signed FP8 needs its own table: UE4M3 ignores the sign, halves values for NVFP4, and maps NaN to zero.
+float ggml_table_f32_f8_e4m3[1 << 8];
 
 #if defined(__ARM_ARCH)
 struct ggml_arm_arch_features_type {
@@ -237,6 +242,15 @@ static void ggml_vec_dot_q5_cr_f32(int n, float * GGML_RESTRICT s, size_t bs,
 static void ggml_vec_dot_q6_cr_f32(int n, float * GGML_RESTRICT s, size_t bs,
                                    const void * GGML_RESTRICT vx, size_t bx,
                                    const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q6_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q6_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q3_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q3_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q2_0s_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_q2_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_tq3_4s_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
+                                      const void * GGML_RESTRICT vx, size_t bx,
+                                      const void * GGML_RESTRICT vy, size_t by, int nrc);
 static void ggml_vec_dot_tq3_1s_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
                                        const void * GGML_RESTRICT vx, size_t bx,
                                        const void * GGML_RESTRICT vy, size_t by, int nrc);
@@ -253,8 +267,8 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     },
     [GGML_TYPE_F16] = {
         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_fp16,
-        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f16,
-        .vec_dot_type             = GGML_TYPE_F16,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f16_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_Q1_0] = {
@@ -266,6 +280,12 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     [GGML_TYPE_Q2_0] = {
         .from_float               = quantize_row_q2_0,
         .vec_dot                  = ggml_vec_dot_q2_0_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_PQ2_0] = {
+        .from_float               = quantize_row_pq2_0,
+        .vec_dot                  = ggml_vec_dot_pq2_0_q8_0,
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
     },
@@ -344,6 +364,12 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .from_float               = quantize_row_nvfp4,
         .vec_dot                  = ggml_vec_dot_nvfp4_q8_0,
         .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_F8_E4M3] = {
+        .from_float               = quantize_row_f8_e4m3,
+        .vec_dot                  = ggml_vec_dot_f8_e4m3_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_Q2_K] = {
@@ -484,6 +510,154 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     [GGML_TYPE_TQ3_1S] = {
         .from_float               = (ggml_from_float_t) quantize_row_tq3_1s_ref,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_tq3_1s_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q6_0] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q6_0_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q6_0_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q6_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q6_1_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q6_1_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q3_0] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q3_0_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q3_0_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q3_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q3_1_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q3_1_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q2_0S] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q2_0s_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q2_0s_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q2_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_q2_1_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_q2_1_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ2_K] = {
+        .from_float               = quantize_row_iq2_k,
+        .vec_dot                  = ggml_cpu_vec_dot_iq2_k_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ3_K] = {
+        .from_float               = quantize_row_iq3_k,
+        .vec_dot                  = ggml_cpu_vec_dot_iq3_k_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ4_K] = {
+        .from_float               = quantize_row_iq4_k,
+        .vec_dot                  = ggml_cpu_vec_dot_iq4_k_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ5_K] = {
+        .from_float               = quantize_row_iq5_k,
+        .vec_dot                  = ggml_cpu_vec_dot_iq5_k_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ6_K] = {
+        .from_float               = quantize_row_iq6_k,
+        .vec_dot                  = vec_dot_iq6_k_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ4_KS] = {
+        .from_float               = quantize_row_iq4_ks,
+        .vec_dot                  = vec_dot_iq4_ks_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ2_KS] = {
+        .from_float               = quantize_row_iq2_ks,
+        .vec_dot                  = vec_dot_iq2_ks_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ4_KSS] = {
+        .from_float               = quantize_row_iq4_kss,
+        .vec_dot                  = vec_dot_iq4_kss_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ1_KT] = {
+        .from_float               = quantize_row_iq1_kt,
+        .vec_dot                  = vec_dot_iq1_kt_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ2_KT] = {
+        .from_float               = quantize_row_iq2_kt,
+        .vec_dot                  = vec_dot_iq2_kt_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ3_KT] = {
+        .from_float               = quantize_row_iq3_kt,
+        .vec_dot                  = vec_dot_iq3_kt_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ4_KT] = {
+        .from_float               = quantize_row_iq4_kt,
+        .vec_dot                  = vec_dot_iq4_kt_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ5_KS] = {
+        .from_float               = quantize_row_iq5_ks,
+        .vec_dot                  = vec_dot_iq5_ks_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ3_KS] = {
+        .from_float               = quantize_row_iq3_ks,
+        .vec_dot                  = vec_dot_iq3_ks_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_IQ2_KL] = {
+        .from_float               = quantize_row_iq2_kl,
+        .vec_dot                  = vec_dot_iq2_kl_q8_k,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_PQ2_0] = {
+        .from_float               = quantize_row_pq2_0,
+        .vec_dot                  = ggml_vec_dot_pq2_0_q8_K,
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_PTQ1_0] = {
+        .from_float               = quantize_row_ptq1_0,
+        .vec_dot                  = ggml_vec_dot_ptq1_0_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+#if defined (__ARM_FEATURE_MATMUL_INT8)
+        .nrows                    = 2,
+#else
+        .nrows                    = 1,
+#endif
+    },
+    [GGML_TYPE_TQ3_4S] = {
+        .from_float               = (ggml_from_float_t) quantize_row_tq3_4s_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_tq3_4s_q8_0,
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
     },
@@ -817,7 +991,7 @@ static void ggml_init_arm_arch_features(void) {}
 #endif
 #endif // __ARM_ARCH
 
-#if defined(__riscv) && defined(__riscv_v_intrinsic)
+#if defined(__riscv) && defined(__riscv_v)
 #include <riscv_vector.h>
 static void ggml_init_riscv_arch_features(void) {
     ggml_riscv_arch_features.rvv_vlen = __riscv_vlenb();
@@ -1353,9 +1527,12 @@ void ggml_compute_forward_mul_mat(
     const int ith = params->ith;
     const int nth = params->nth;
 
-    enum ggml_type           const vec_dot_type         = type_traits_cpu[src0->type].vec_dot_type;
-    ggml_from_float_t        const from_float           = type_traits_cpu[vec_dot_type].from_float;
-    int64_t                  const vec_dot_num_rows     = type_traits_cpu[src0->type].nrows;
+    enum ggml_type    const vec_dot_type     = type_traits_cpu[src0->type].vec_dot_type;
+    ggml_from_float_t const from_float       = type_traits_cpu[vec_dot_type].from_float;
+    int64_t           const vec_dot_num_rows = type_traits_cpu[src0->type].nrows;
+
+    // TODO: a more efficient F16 x F16 path can be used here if ggml_prec_get_src(dst, 1) allows converting src1 to F16
+    //       the code needs to be refactored to enable this (src1 is currently converted based on vec_dot_type alone)
 
     GGML_ASSERT(ne0 == ne01);
     GGML_ASSERT(ne1 == ne11);
@@ -1579,8 +1756,8 @@ static void ggml_compute_forward_mul_mat_id_one_chunk(
 
     const enum ggml_type type = src0->type;
 
-    ggml_vec_dot_t    const vec_dot      = type_traits_cpu[type].vec_dot;
-    enum ggml_type    const vec_dot_type = type_traits_cpu[type].vec_dot_type;
+    ggml_vec_dot_t const vec_dot      = type_traits_cpu[type].vec_dot;
+    enum ggml_type const vec_dot_type = type_traits_cpu[type].vec_dot_type;
 
     const int64_t blck_0 = 16;
     const int64_t blck_1 = 16;
@@ -1654,8 +1831,11 @@ static void ggml_compute_forward_mul_mat_id_impl(
 
     const bool src1_cont = ggml_is_contiguous(src1);
 
-    enum ggml_type    const vec_dot_type    = type_traits_cpu[type].vec_dot_type;
-    ggml_from_float_t const from_float      = type_traits_cpu[vec_dot_type].from_float;
+    enum ggml_type    const vec_dot_type = type_traits_cpu[type].vec_dot_type;
+    ggml_from_float_t const from_float   = type_traits_cpu[vec_dot_type].from_float;
+
+    // TODO: a more efficient F16 x F16 path can be used here if ggml_prec_get_src(dst, 1) allows converting src1 to F16
+    //       the code needs to be refactored to enable this (src1 is currently converted based on vec_dot_type alone)
 
     // we don't support permuted src0 or src1
     GGML_ASSERT(nb00 == ggml_type_size(type));
@@ -2321,6 +2501,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_dsv4_hc_post(params, tensor);
             } break;
+        case GGML_OP_TOP_K_MASK:
+            {
+                ggml_compute_forward_top_k_mask(params, tensor);
+            } break;
         case GGML_OP_MAP_CUSTOM1:
             {
                 ggml_compute_forward_map_custom1(params, tensor);
@@ -2505,6 +2689,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_DSV4_HC_COMB:
         case GGML_OP_DSV4_HC_PRE:
         case GGML_OP_DSV4_HC_POST:
+        case GGML_OP_TOP_K_MASK:
             {
                 n_tasks = n_threads;
             } break;
@@ -2581,11 +2766,11 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
         case GGML_OP_OUT_PROD:
+        case GGML_OP_SET_ROWS:
             {
                 n_tasks = n_threads;
             } break;
         case GGML_OP_GET_ROWS:
-        case GGML_OP_SET_ROWS:
             {
                 // FIXME: get_rows can use additional threads, but the cost of launching additional threads
                 // decreases performance with GPU offloading
@@ -3086,7 +3271,7 @@ struct ggml_cplan ggml_graph_plan(
                 case GGML_OP_ADD_ID:
                 case GGML_OP_ADD1:
                     {
-                        if (ggml_is_quantized(node->src[0]->type)) {
+                        if (ggml_is_quantized(node->src[0]->type) || node->src[0]->type == GGML_TYPE_F8_E4M3) {
                             cur = ggml_type_size(GGML_TYPE_F32) * node->src[0]->ne[0] * n_tasks;
                         }
                     } break;
@@ -3134,7 +3319,7 @@ struct ggml_cplan ggml_graph_plan(
                     } break;
                 case GGML_OP_OUT_PROD:
                     {
-                        if (ggml_is_quantized(node->src[0]->type) ||
+                        if (ggml_is_quantized(node->src[0]->type) || node->src[0]->type == GGML_TYPE_F8_E4M3 ||
                             node->src[0]->type == GGML_TYPE_F16) {
                             cur = ggml_type_size(GGML_TYPE_F32) * node->src[0]->ne[0] * n_tasks;
                         }
@@ -3166,8 +3351,8 @@ struct ggml_cplan ggml_graph_plan(
                         if ((node->src[0]->type == GGML_TYPE_F16 ||
                              node->src[0]->type == GGML_TYPE_BF16) &&
                             node->src[1]->type == GGML_TYPE_F32) {
+                            cur += sizeof(float)*ne10*ne11;
                             cur += sizeof(ggml_fp16_t)*ne00*ne01*ne02;
-                            cur += sizeof(ggml_fp16_t)*ne10*ne11;
                         } else if (node->src[0]->type == GGML_TYPE_F32 &&
                                    node->src[1]->type == GGML_TYPE_F32) {
                             cur += sizeof(float)*ne00*ne01*ne02;
@@ -3196,8 +3381,8 @@ struct ggml_cplan ggml_graph_plan(
                         GGML_ASSERT(node->src[0]->type == GGML_TYPE_F16 || node->src[0]->type == GGML_TYPE_F32);
                         GGML_ASSERT(node->src[1]->type == GGML_TYPE_F32);
 
+                        cur += sizeof(float) * ne10 * ne11 * ne12 * ne13;
                         cur += ggml_type_size(node->src[0]->type) * ne00 * ne01 * ne02 * ne03;
-                        cur += ggml_type_size(node->src[0]->type) * ne10 * ne11 * ne12 * ne13;
 
                     } break;
                 case GGML_OP_TOP_K:
@@ -3219,7 +3404,11 @@ struct ggml_cplan ggml_graph_plan(
                         size_t n_chunks = n_tasks;
                         size_t decode   = sizeof(float)*(neq2*n_chunks*(2+DV) + n_tasks*(DK + 2*DV));
 
-                        cur += MAX(prefill, decode);
+                        // Grouped decode (quantized K/V, few query rows): tiled scratch + per-row partials, up to n_tasks chunks per row
+                        const int64_t neq1 = node->src[0]->ne[1];
+                        size_t grouped = neq1 < GGML_FA_TILE_Q ? prefill + sizeof(float)*(CACHE_LINE_SIZE_F32*n_tasks + neq1*neq2*n_tasks*(2+DV)) : 0;
+
+                        cur += MAX(MAX(prefill, decode), grouped);
                     } break;
                 case GGML_OP_FLASH_ATTN_BACK:
                     {
@@ -3244,6 +3433,7 @@ struct ggml_cplan ggml_graph_plan(
                     } break;
                 case GGML_OP_GATED_DELTA_NET:
                     {
+                        GGML_ASSERT(ggml_gated_delta_net_validate(node));
                         const int64_t S_v = node->src[2]->ne[0];
                         const int64_t K   = ggml_get_op_params_i32(node, 0);
                         const int64_t per_thread = S_v + (K > 1 ? S_v * S_v : 0);
@@ -3661,6 +3851,8 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         /*.wdata      =*/ cplan->work_data,
         /*.threadpool =*/ tp,
         /*.use_ref    =*/ cplan->use_ref,
+        /*.get_rows_callback =*/ cplan->get_rows_callback,
+        /*.get_rows_callback_data =*/ cplan->get_rows_callback_data,
     };
 
 #ifdef GGML_USE_OPENMP
@@ -4030,11 +4222,91 @@ enum ggml_status ggml_graph_compute_with_ctx(struct ggml_context * ctx, struct g
 // unchanged too and results are bit-identical to the previous implementation.
 #define GGML_TQ_DOT_CHUNK 256
 
+// TurboQuant row dequant for the CPU backend. The ggml-base to_float is scalar (one table load and
+// multiply per value). Here the block norm is folded into the centroid table once per block and 16
+// codes at a time are looked up with an in-register permute. Each output is the same c[idx] * norm
+// product as the scalar path, so results are bit-identical. Tables mirror ggml-turbo-quant.c.
+#if defined(__AVX512F__)
+static const float turbo_cpu_c3[16] = {
+    -0.190207f, -0.118786f, -0.066822f, -0.021663f, 0.021663f, 0.066822f, 0.118786f, 0.190207f,
+};
+static const float turbo_cpu_c4[16] = {
+    -0.241529f, -0.182877f, -0.143016f, -0.111036f, -0.083292f, -0.058050f, -0.034299f, -0.011349f,
+     0.011349f,  0.034299f,  0.058050f,  0.083292f,  0.111036f,  0.143016f,  0.182877f,  0.241529f,
+};
+
+// 16 nibbles (8 bytes, element 2i in the low nibble of byte i) -> 16 int32 lanes
+static inline __m512i turbo_cpu_nib16(const uint8_t * p) {
+    const __m128i b = _mm_loadl_epi64((const __m128i *) p);
+    const __m512i w = _mm512_cvtepu8_epi32(_mm_unpacklo_epi8(b, b));
+    return _mm512_and_si512(_mm512_srlv_epi32(w, _mm512_set_epi32(4,0,4,0,4,0,4,0,4,0,4,0,4,0,4,0)),
+                            _mm512_set1_epi32(0xF));
+}
+
+// 16 2-bit fields (4 bytes, element 4i+j at bits 2j of byte i) -> 16 int32 lanes
+static inline __m512i turbo_cpu_crumb16(const uint8_t * p) {
+    int32_t v;
+    memcpy(&v, p, sizeof(v));
+    const __m128i b = _mm_shuffle_epi8(_mm_cvtsi32_si128(v), _mm_set_epi8(3,3,3,3,2,2,2,2,1,1,1,1,0,0,0,0));
+    const __m512i w = _mm512_cvtepu8_epi32(b);
+    return _mm512_and_si512(_mm512_srlv_epi32(w, _mm512_set_epi32(6,4,2,0,6,4,2,0,6,4,2,0,6,4,2,0)),
+                            _mm512_set1_epi32(0x3));
+}
+
+// 16 bits (2 bytes, element i at bit i%8 of byte i/8) -> lane mask
+static inline __mmask16 turbo_cpu_bits16(const uint8_t * p) {
+    uint16_t m;
+    memcpy(&m, p, sizeof(m));
+    return (__mmask16) m;
+}
+
+static void turbo3_to_f32_avx512(const void * GGML_RESTRICT vx, float * GGML_RESTRICT y, int64_t k) {
+    const block_turbo3_0 * x = (const block_turbo3_0 *) vx;
+    const __m512 c = _mm512_loadu_ps(turbo_cpu_c3);
+    for (int64_t ib = 0; ib < k / QK_TURBO3; ib++, y += QK_TURBO3) {
+        const __m512 t = _mm512_mul_ps(c, _mm512_set1_ps(GGML_CPU_FP16_TO_FP32(x[ib].norm)));
+        for (int j = 0; j < QK_TURBO3 / 16; j++) {
+            const __m512i lo  = turbo_cpu_crumb16(x[ib].qs + 4*j);
+            const __m512i idx = _mm512_mask_add_epi32(lo, turbo_cpu_bits16(x[ib].signs + 2*j), lo, _mm512_set1_epi32(4));
+            _mm512_storeu_ps(y + 16*j, _mm512_permutexvar_ps(idx, t));
+        }
+    }
+}
+
+#if TURBO4_USE_4BIT
+static void turbo4_to_f32_avx512(const void * GGML_RESTRICT vx, float * GGML_RESTRICT y, int64_t k) {
+    const block_turbo4_0 * x = (const block_turbo4_0 *) vx;
+    const __m512 c = _mm512_loadu_ps(turbo_cpu_c4);
+    for (int64_t ib = 0; ib < k / QK_TURBO4; ib++, y += QK_TURBO4) {
+        const __m512 t = _mm512_mul_ps(c, _mm512_set1_ps(GGML_CPU_FP16_TO_FP32(x[ib].norm)));
+        for (int j = 0; j < QK_TURBO4 / 16; j++) {
+            _mm512_storeu_ps(y + 16*j, _mm512_permutexvar_ps(turbo_cpu_nib16(x[ib].qs + 8*j), t));
+        }
+    }
+}
+#endif
+
+#endif
+
+ggml_to_float_t ggml_cpu_get_to_float(enum ggml_type type) {
+#if defined(__AVX512F__)
+    switch (type) {
+        case GGML_TYPE_TURBO3_0: return turbo3_to_f32_avx512;
+#if TURBO4_USE_4BIT
+        case GGML_TYPE_TURBO4_0: return turbo4_to_f32_avx512;
+#endif
+        default: break;
+    }
+#endif
+    return ggml_get_type_traits(type)->to_float;
+}
+
 // vy is plain f32 — used by CPU flash attention against a TurboQuant KV cache
 // for head dims the GPU backends do not support (e.g. D=192).
 static void ggml_vec_dot_turbo_f32_impl(enum ggml_type type_x, int n, float * GGML_RESTRICT s,
                                         const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
     const struct ggml_type_traits * trx = ggml_get_type_traits(type_x);
+    ggml_to_float_t const to_float = ggml_cpu_get_to_float(type_x);
 
     const int64_t blk = trx->blck_size;
     GGML_ASSERT(n % blk == 0);
@@ -4050,10 +4322,10 @@ static void ggml_vec_dot_turbo_f32_impl(enum ggml_type type_x, int n, float * GG
 
     for (int64_t i = 0; i < n; i += chunk) {
         const int64_t nc = MIN(chunk, n - i);
-        trx->to_float(px, xb, nc);
-        for (int64_t j = 0; j < nc; j++) {
-            sum += xb[j] * y[i + j];
-        }
+        to_float(px, xb, nc);
+        float part;
+        ggml_vec_dot_f32((int) nc, &part, 0, xb, 0, y + i, 0, 1);
+        sum += part;
         px += (nc / blk) * trx->type_size;
     }
 
@@ -4178,6 +4450,47 @@ static void ggml_vec_dot_tq3_1s_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
     ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_TQ3_1S, n, s, vx, vy);
 }
 
+// beellama KV types: reference dequant-dot against q8_0 (no SIMD kernels yet)
+static void ggml_vec_dot_q6_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q6_0, n, s, vx, vy);
+}
+static void ggml_vec_dot_q6_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q6_1, n, s, vx, vy);
+}
+static void ggml_vec_dot_q3_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q3_0, n, s, vx, vy);
+}
+static void ggml_vec_dot_q3_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q3_1, n, s, vx, vy);
+}
+static void ggml_vec_dot_q2_0s_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q2_0S, n, s, vx, vy);
+}
+static void ggml_vec_dot_q2_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_Q2_1, n, s, vx, vy);
+}
+
+// TQ3_4S vec_dot: dequantize to f32, then dot with q8_0 (reference path).
+static void ggml_vec_dot_tq3_4s_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
+                                      const void * GGML_RESTRICT vx, size_t bx,
+                                      const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    ggml_vec_dot_tq_q8_0_impl(GGML_TYPE_TQ3_4S, n, s, vx, vy);
+}
+
 // TQ4_1S vec_dot: dequantize tq4_1s block to f32, then dot with q8_0.
 // TODO: optimize with SIMD intrinsics
 static void ggml_vec_dot_tq4_1s_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
@@ -4253,7 +4566,7 @@ void ggml_cpu_fp16_to_fp32(const ggml_fp16_t * x, float * y, int64_t n) {
         _mm_storeu_ps(y + i, y_vec);
     }
 
-#elif defined(__riscv_v_intrinsic) && defined(__riscv_zvfhmin)
+#elif defined(__riscv_v) && defined(__riscv_zvfhmin)
     // calculate step size
     const int epr = __riscv_vsetvlmax_e16m2();
     const int step = epr * 2;
@@ -4323,7 +4636,7 @@ void ggml_cpu_bf16_to_fp32(const ggml_bf16_t * x, float * y, int64_t n) {
                                         (const __m128i *)(x + i))),
                                 16)));
     }
-#elif defined(__riscv_v_intrinsic) && defined(__riscv_zvfbfmin)
+#elif defined(__riscv_v) && defined(__riscv_zvfbfmin)
     // calculate step size
     const int epr = __riscv_vsetvlmax_e16m2();
     const int step = epr * 2;
@@ -4443,7 +4756,7 @@ int ggml_cpu_has_arm_fma(void) {
 }
 
 int ggml_cpu_has_riscv_v(void) {
-#if defined(__riscv_v_intrinsic)
+#if defined(__riscv_v)
     return 1;
 #else
     return 0;
@@ -4451,7 +4764,7 @@ int ggml_cpu_has_riscv_v(void) {
 }
 
 int ggml_cpu_get_rvv_vlen(void) {
-#if defined(__riscv) && defined(__riscv_v_intrinsic)
+#if defined(__riscv) && defined(__riscv_v)
     return ggml_riscv_arch_features.rvv_vlen;
 #else
     return 0;
@@ -4614,6 +4927,7 @@ void ggml_cpu_init(void) {
             // initialize UE4M3 table (256 entries)
             for (int i = 0; i < (1 << 8); ++i) {
                 ggml_table_f32_ue4m3[i] = ggml_ue4m3_to_fp32(i);
+                ggml_table_f32_f8_e4m3[i] = ggml_f8_e4m3_to_fp32(i);
             }
 
             const uint64_t t_end = ggml_time_us(); UNUSED(t_end);

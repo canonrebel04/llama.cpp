@@ -34,7 +34,6 @@ options:
   -v, --verbose                             verbose output
   --progress                                print test progress indicators
   --no-warmup                               skip warmup runs before benchmarking
-  --n-gen-warmup <n>                       generation tokens to run before timing (default: 1)
   -fitt, --fit-target <MiB>                 fit model to device memory with this margin per device in MiB (default: off)
   -fitc, --fit-ctx <n>                      minimum ctx size for --fit-target (default: 0)
   -rpc, --rpc <rpc_servers>                 register RPC devices (comma separated)
@@ -49,8 +48,6 @@ test parameters:
                                             (default: unused)
   -hft, --hf-token <token>                  Hugging Face access token
                                             (default: value from HF_TOKEN environment variable)
-  --offline                                 use cached model files and disable network access
-                                            (default: disabled)
   -p, --n-prompt <n>                        (default: 512)
   -n, --n-gen <n>                           (default: 128)
   -pg <pp,tg>                               (default: )
@@ -65,12 +62,14 @@ test parameters:
   --poll <0...100>                          (default: 50)
   -ngl, --n-gpu-layers <n>                  (default: -1)
   -ncmoe, --n-cpu-moe <n>                   (default: 0)
-  --moe-cache <auto|on|off|0|MiB>           (default: auto)
-  --repack <auto|on|off>                    weight repacking policy (default: auto)
-  -nr, --no-repack                          equivalent to --repack off
   -sm, --split-mode <none|layer|row|tensor> (default: layer)
   -mg, --main-gpu <i>                       (default: 0)
   -nkvo, --no-kv-offload <0|1>              (default: 0)
+  -kvcp, --kv-cpu-pinned <0|1>              (default: 0)
+  -rso, --recurrent-state-offload <0|1>     (default: 0)
+  -paw, --phase-aware-workspace <0|1>       (default: 0)
+  -lcw, --live-context-workspace <0|1>      (default: 0)
+  -kvgl, --kv-gpu-layers <n>                (default: 0)
   -fa, --flash-attn <on|off|auto>           (default: auto)
   -dev, --device <dev0/dev1/...>            (default: auto)
   -lm, --load-mode <auto|none|mmap|mlock|mmap+mlock|dio>
@@ -95,19 +94,33 @@ llama-bench can perform three types of tests:
 - Text generation (tg): generating a sequence of tokens (`-n`)
 - Prompt processing + text generation (pg): processing a prompt followed by generating a sequence of tokens (`-pg`)
 
-List-valued options can be specified multiple times to run multiple tests. Each pp and tg test is run with all combinations of those options. Multiple values can be separated by commas (e.g. `-n 16,32`), or the option can be specified multiple times (e.g. `-n 16 -n 32`). Scalar options such as `-r`, `-o`, `-v`, `--n-gen-warmup`, and `--repack` apply to all generated tests.
+With the exception of `-r`, `-o` and `-v`, all options can be specified multiple times to run multiple tests. Each pp and tg test is run with all combinations of the specified options. To specify multiple values for an option, the values can be separated by commas (e.g. `-n 16,32`), or the option can be specified multiple times (e.g. `-n 16 -n 32`).
 
 Each test is repeated the number of times given by `-r`, and the results are averaged. The results are given in average tokens per second (t/s) and standard deviation. Some output formats (e.g. json) also include the individual results of each repetition.
 
 Using the `-d <n>` option, each test can be run at a specified context depth, prefilling the KV cache with `<n>` tokens.
 
-`--n-gen-warmup <n>` controls how many generation tokens run before timing. This is useful when a benchmark needs to populate persistent runtime state such as the MoE expert cache. `--moe-cache off` provides a hard-disabled baseline. `auto` preserves repacking and may remain dormant, while `on` and a positive per-device MiB budget use canonical CPU weights and disable repacking. `--repack on` is rejected for those modes. Use `--repack off` for a matched canonical-weight baseline, for example `--moe-cache off,4096 --repack off`.
-
-Prompt and generation inputs use deterministic synthetic token traces. Every cache or repack arm receives the same trace for a given repetition, so matched A/B tests do not measure different expert-routing inputs. The generation warmup uses a separate fixed trace and is excluded from the timed region.
-
-llama-bench sets `GGML_CUDA_MOE_CACHE`, `GGML_CUDA_MOE_CACHE_MODE`, and `GGML_CUDA_MOE_CACHE_BUDGET_MB` for each test instance. Do not use those raw variables to select benchmark arms; use `--moe-cache` or `LLAMA_ARG_MOE_CACHE`. Other cache tuning variables, such as the reserve and admission settings, are not replaced.
-
 For a description of the other options, see the [completion example](../completion/README.md).
+
+### KV and workspace parameters in this fork
+
+The maintained fork adds the following context parameters. The four boolean options require exactly `0` or `1` per value, for example `-paw 0,1`. `-kvgl` accepts nonnegative integers, lists such as `0,4,8`, and ranges such as `0-8+4`. Repeating an option also adds values to its sweep. Multiple sweeps run every combination.
+
+| Option | Behavior and limits |
+| --- | --- |
+| `-kvgl`, `--kv-gpu-layers` | With `-nkvo 1`, requests device residency for the first N independently owned attention KV layers. Standard and direct hybrid caches support it; unsupported specialized caches ignore it. The model's layer placement and available attention layers limit what can become GPU resident. |
+| `-kvcp`, `--kv-cpu-pinned` | Requests pinned buffers for host KV when the backend provides them. With operation offload enabled (`-nopo 0`), it also allows attention compute on the accelerator, so a `0,1` sweep can change both storage and compute placement. |
+| `-rso`, `--recurrent-state-offload` | Offloads recurrent state for recurrent and hybrid models independently of host attention KV. With `-nkvo 0`, KV offload already enables recurrent state offload, so changing this option has no additional effect. |
+| `-paw`, `--phase-aware-workspace` | Resizes compute workspaces between prompt processing and token generation; a later prompt regrows the reservation. It can be combined with `-lcw 1`. |
+| `-lcw`, `--live-context-workspace` | Grows compute reservations with the padded live KV extent for supported attention caches. Unsupported caches fall back to full-context reservation. It does not shrink the KV cache allocation itself. |
+
+The output fields `kv_gpu_layers`, `kv_cpu_pinned`, `recurrent_state_offload`, `phase_aware_workspace`, and `live_context_workspace` record requested settings. They do not prove successful pinning, realized GPU residency, or that a cache supports the requested mode. Warnings are shown by default unless structured results are sent to stderr with `-oe`. Use `-v` to record allocation and placement details, and retain stderr with the results; use `-o` for structured output when collecting these logs.
+
+For example, keep host KV pinning and compute settings fixed while sweeping partial KV residency:
+
+```sh
+./llama-bench -m model.gguf -ngl 99 -nkvo 1 -kvcp 1 -rso 1 -kvgl 0,4,8 -p 0 -n 128 -d 4096 -v -o jsonl > kv-results.jsonl 2> kv-results.log
+```
 
 > [!NOTE]
 > The measurements with `llama-bench` do not include the times for tokenization and for sampling.
@@ -216,24 +229,17 @@ $ ./llama-bench -o md
 | llama 7B mostly Q4_0           |   3.56 GiB |     6.74 B | CUDA       |  -1 | pp 512     |  2368.80 ± 93.24 |
 | llama 7B mostly Q4_0           |   3.56 GiB |     6.74 B | CUDA       |  -1 | tg 128     |    131.42 ± 0.59 |
 
-The CSV, JSON, JSONL, and SQL printers use the same runtime-generated schema. In addition to model, hardware, test-shape, and timing data, the schema includes these configuration fields:
-
-| field | type | meaning |
-| ----- | ---- | ------- |
-| `load_mode` | string | effective model load mode, such as `mmap`, `mlock`, or `dio` |
-| `moe_cache` | string | selected cache policy: `auto`, `on`, `off`, or a per-device MiB budget |
-| `repack` | boolean | whether the loader allows extra buffer types used for weight repacking after cache compatibility rules |
-| `n_gen_warmup` | integer | effective number of untimed generation warmup tokens |
-
-`moe_cache` records the requested policy, not proof that a cache pool engaged. `repack` records loader policy, not proof that every eligible tensor was repacked. The full field list is emitted by the selected formatter, which avoids copying a version-specific schema into this document.
-
 ### CSV
 
 ```sh
 $ ./llama-bench -o csv
 ```
 
-CSV prints one header row followed by one row per benchmark result. Repetition samples are summarized by the aggregate timing fields.
+```csv
+build_commit,build_number,cpu_info,gpu_info,backends,model_filename,model_type,model_size,model_n_params,n_batch,n_ubatch,n_threads,cpu_mask,cpu_strict,poll,type_k,type_v,n_gpu_layers,n_cpu_moe,split_mode,main_gpu,no_kv_offload,flash_attn,devices,tensor_split,tensor_buft_overrides,use_mmap,use_direct_io,embeddings,no_op_offload,no_host,fit_target,fit_min_ctx,n_prompt,n_gen,n_depth,test_time,avg_ns,stddev_ns,avg_ts,stddev_ts
+"8cf427ff","5163","AMD Ryzen 7 7800X3D 8-Core Processor","NVIDIA GeForce RTX 4080","CUDA","models/Qwen2.5-7B-Instruct-Q4_K_M.gguf","qwen2 7B Q4_K - Medium","4677120000","7615616512","2048","512","8","0x0","0","50","f16","f16","-1","0","layer","0","0","-1","auto","0.00","none","1","0","0","0","0","0","0","512","0","0","2025-04-24T11:57:09Z","70285660","982040","7285.676949","100.064434"
+"8cf427ff","5163","AMD Ryzen 7 7800X3D 8-Core Processor","NVIDIA GeForce RTX 4080","CUDA","models/Qwen2.5-7B-Instruct-Q4_K_M.gguf","qwen2 7B Q4_K - Medium","4677120000","7615616512","2048","512","8","0x0","0","50","f16","f16","-1","0","layer","0","0","-1","auto","0.00","none","1","0","0","0","0","0","0","0","128","0","2025-04-24T11:57:10Z","1067431600","3834831","119.915244","0.430617"
+```
 
 ### JSON
 
@@ -241,7 +247,101 @@ CSV prints one header row followed by one row per benchmark result. Repetition s
 $ ./llama-bench -o json
 ```
 
-JSON prints an array of benchmark objects. Each object also contains `samples_ns` and `samples_ts` arrays for the individual repetitions.
+```json
+[
+  {
+    "build_commit": "8cf427ff",
+    "build_number": 5163,
+    "cpu_info": "AMD Ryzen 7 7800X3D 8-Core Processor",
+    "gpu_info": "NVIDIA GeForce RTX 4080",
+    "backends": "CUDA",
+    "model_filename": "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+    "model_type": "qwen2 7B Q4_K - Medium",
+    "model_size": 4677120000,
+    "model_n_params": 7615616512,
+    "n_batch": 2048,
+    "n_ubatch": 512,
+    "n_threads": 8,
+    "cpu_mask": "0x0",
+    "cpu_strict": false,
+    "poll": 50,
+    "type_k": "f16",
+    "type_v": "f16",
+    "n_gpu_layers": -1,
+    "n_cpu_moe": 0,
+    "split_mode": "layer",
+    "main_gpu": 0,
+    "no_kv_offload": false,
+    "flash_attn": -1,
+    "devices": "auto",
+    "tensor_split": "0.00",
+    "tensor_buft_overrides": "none",
+    "use_mmap": true,
+    "use_direct_io": false,
+    "embeddings": false,
+    "no_op_offload": 0,
+    "no_host": false,
+    "fit_target": 0,
+    "fit_min_ctx": 0,
+    "n_prompt": 512,
+    "n_gen": 0,
+    "n_depth": 0,
+    "test_time": "2025-04-24T11:58:50Z",
+    "avg_ns": 72135640,
+    "stddev_ns": 1453752,
+    "avg_ts": 7100.002165,
+    "stddev_ts": 140.341520,
+    "samples_ns": [ 74601900, 71632900, 71745200, 71952700, 70745500 ],
+    "samples_ts": [ 6863.1, 7147.55, 7136.37, 7115.79, 7237.21 ]
+  },
+  {
+    "build_commit": "8cf427ff",
+    "build_number": 5163,
+    "cpu_info": "AMD Ryzen 7 7800X3D 8-Core Processor",
+    "gpu_info": "NVIDIA GeForce RTX 4080",
+    "backends": "CUDA",
+    "model_filename": "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+    "model_type": "qwen2 7B Q4_K - Medium",
+    "model_size": 4677120000,
+    "model_n_params": 7615616512,
+    "n_batch": 2048,
+    "n_ubatch": 512,
+    "n_threads": 8,
+    "cpu_mask": "0x0",
+    "cpu_strict": false,
+    "poll": 50,
+    "type_k": "f16",
+    "type_v": "f16",
+    "n_gpu_layers": -1,
+    "n_cpu_moe": 0,
+    "split_mode": "layer",
+    "main_gpu": 0,
+    "no_kv_offload": false,
+    "flash_attn": -1,
+    "devices": "auto",
+    "tensor_split": "0.00",
+    "tensor_buft_overrides": "none",
+    "use_mmap": true,
+    "use_direct_io": false,
+    "embeddings": false,
+    "no_op_offload": 0,
+    "no_host": false,
+    "fit_target": 0,
+    "fit_min_ctx": 0,
+    "n_prompt": 0,
+    "n_gen": 128,
+    "n_depth": 0,
+    "test_time": "2025-04-24T11:58:51Z",
+    "avg_ns": 1076767880,
+    "stddev_ns": 9449585,
+    "avg_ts": 118.881588,
+    "stddev_ts": 1.041811,
+    "samples_ns": [ 1075361300, 1065089400, 1071761200, 1081934900, 1089692600 ],
+    "samples_ts": [ 119.03, 120.178, 119.43, 118.307, 117.464 ]
+  }
+]
+```
+
 
 ### JSONL
 
@@ -249,12 +349,65 @@ JSON prints an array of benchmark objects. Each object also contains `samples_ns
 $ ./llama-bench -o jsonl
 ```
 
-JSONL prints the same objects as JSON, one complete object per line.
+```json lines
+{"build_commit": "8cf427ff", "build_number": 5163, "cpu_info": "AMD Ryzen 7 7800X3D 8-Core Processor", "gpu_info": "NVIDIA GeForce RTX 4080", "backends": "CUDA", "model_filename": "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf", "model_type": "qwen2 7B Q4_K - Medium", "model_size": 4677120000, "model_n_params": 7615616512, "n_batch": 2048, "n_ubatch": 512, "n_threads": 8, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": -1, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": -1, "devices": "auto", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": true, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 512, "n_gen": 0, "n_depth": 0, "test_time": "2025-04-24T11:59:33Z", "avg_ns": 70497220, "stddev_ns": 883196, "avg_ts": 7263.609157, "stddev_ts": 90.940578, "samples_ns": [ 71551000, 71222800, 70364100, 69439100, 69909100 ],"samples_ts": [ 7155.74, 7188.71, 7276.44, 7373.37, 7323.8 ]}
+{"build_commit": "8cf427ff", "build_number": 5163, "cpu_info": "AMD Ryzen 7 7800X3D 8-Core Processor", "gpu_info": "NVIDIA GeForce RTX 4080", "backends": "CUDA", "model_filename": "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf", "model_type": "qwen2 7B Q4_K - Medium", "model_size": 4677120000, "model_n_params": 7615616512, "n_batch": 2048, "n_ubatch": 512, "n_threads": 8, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": -1, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": -1, "devices": "auto", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": true, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 0, "n_gen": 128, "n_depth": 0, "test_time": "2025-04-24T11:59:33Z", "avg_ns": 1068078400, "stddev_ns": 6279455, "avg_ts": 119.844681, "stddev_ts": 0.699739, "samples_ns": [ 1066331700, 1064864900, 1079042600, 1063328400, 1066824400 ],"samples_ts": [ 120.038, 120.203, 118.624, 120.377, 119.982 ]}
+```
+
 
 ### SQL
 
-SQL output creates a `llama_bench` table from the current runtime schema and emits one `INSERT` statement per result. It can be piped directly into SQLite:
+SQL output is suitable for importing into a SQLite database. The output can be piped into the `sqlite3` command line tool to add the results to a database.
 
 ```sh
-$ ./llama-bench -o sql | sqlite3 benchmark.sqlite
+$ ./llama-bench -o sql
+```
+
+```sql
+CREATE TABLE IF NOT EXISTS llama_bench (
+  build_commit TEXT,
+  build_number INTEGER,
+  cpu_info TEXT,
+  gpu_info TEXT,
+  backends TEXT,
+  model_filename TEXT,
+  model_type TEXT,
+  model_size INTEGER,
+  model_n_params INTEGER,
+  n_batch INTEGER,
+  n_ubatch INTEGER,
+  n_threads INTEGER,
+  cpu_mask TEXT,
+  cpu_strict INTEGER,
+  poll INTEGER,
+  type_k TEXT,
+  type_v TEXT,
+  n_gpu_layers INTEGER,
+  n_cpu_moe INTEGER,
+  split_mode TEXT,
+  main_gpu INTEGER,
+  no_kv_offload INTEGER,
+  flash_attn INTEGER,
+  devices TEXT,
+  tensor_split TEXT,
+  tensor_buft_overrides TEXT,
+  use_mmap INTEGER,
+  use_direct_io INTEGER,
+  embeddings INTEGER,
+  no_op_offload INTEGER,
+  no_host INTEGER,
+  fit_target INTEGER,
+  fit_min_ctx INTEGER,
+  n_prompt INTEGER,
+  n_gen INTEGER,
+  n_depth INTEGER,
+  test_time TEXT,
+  avg_ns INTEGER,
+  stddev_ns INTEGER,
+  avg_ts REAL,
+  stddev_ts REAL
+);
+
+INSERT INTO llama_bench (build_commit, build_number, cpu_info, gpu_info, backends, model_filename, model_type, model_size, model_n_params, n_batch, n_ubatch, n_threads, cpu_mask, cpu_strict, poll, type_k, type_v, n_gpu_layers, n_cpu_moe, split_mode, main_gpu, no_kv_offload, flash_attn, devices, tensor_split, tensor_buft_overrides, use_mmap, use_direct_io, embeddings, no_op_offload, no_host, fit_target, fit_min_ctx, n_prompt, n_gen, n_depth, test_time, avg_ns, stddev_ns, avg_ts, stddev_ts) VALUES ('8cf427ff', '5163', 'AMD Ryzen 7 7800X3D 8-Core Processor', 'NVIDIA GeForce RTX 4080', 'CUDA', 'models/Qwen2.5-7B-Instruct-Q4_K_M.gguf', 'qwen2 7B Q4_K - Medium', '4677120000', '7615616512', '2048', '512', '8', '0x0', '0', '50', 'f16', 'f16', '-1', '0', 'layer', '0', '0', '-1', 'auto', '0.00', 'none', '1', '0', '0', '0', '0', '0', '0', '512', '0', '0', '2025-04-24T12:00:08Z', '69905000', '519516', '7324.546977', '54.032613');
+INSERT INTO llama_bench (build_commit, build_number, cpu_info, gpu_info, backends, model_filename, model_type, model_size, model_n_params, n_batch, n_ubatch, n_threads, cpu_mask, cpu_strict, poll, type_k, type_v, n_gpu_layers, n_cpu_moe, split_mode, main_gpu, no_kv_offload, flash_attn, devices, tensor_split, tensor_buft_overrides, use_mmap, use_direct_io, embeddings, no_op_offload, no_host, fit_target, fit_min_ctx, n_prompt, n_gen, n_depth, test_time, avg_ns, stddev_ns, avg_ts, stddev_ts) VALUES ('8cf427ff', '5163', 'AMD Ryzen 7 7800X3D 8-Core Processor', 'NVIDIA GeForce RTX 4080', 'CUDA', 'models/Qwen2.5-7B-Instruct-Q4_K_M.gguf', 'qwen2 7B Q4_K - Medium', '4677120000', '7615616512', '2048', '512', '8', '0x0', '0', '50', 'f16', 'f16', '-1', '0', 'layer', '0', '0', '-1', 'auto', '0.00', 'none', '1', '0', '0', '0', '0', '0', '0', '0', '128', '0', '2025-04-24T12:00:09Z', '1063608780', '4464130', '120.346696', '0.504647');
 ```

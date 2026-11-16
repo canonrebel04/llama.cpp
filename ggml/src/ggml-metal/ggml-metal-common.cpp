@@ -41,17 +41,18 @@ bool ggml_metal_op_mul_mat_use_mm(const struct ggml_tensor * op, bool has_simdgr
 
     return !ggml_is_transposed(op->src[0]) &&
            !ggml_is_transposed(op->src[1]) &&
-           has_simdgroup_mm && ne00 >= 64 && (ne11 > 8 || is_tq);
+           has_simdgroup_mm && ((ne11 > 8 && ne00 >= 32) || (is_tq && ne00 >= 64));
 }
 
 bool ggml_metal_op_mul_mat_id_use_mm(const struct ggml_tensor * op, bool has_simdgroup_mm) {
     const int64_t ne00 = op->src[0]->ne[0];
+    const int64_t ne02 = op->src[0]->ne[2];
     const int64_t ne21 = op->src[2]->ne[1];
 
     // fork: TQ weights use the rotated mul_mm_id path from a single token
     const bool is_tq = op->src[0]->type == GGML_TYPE_TQ3_1S || op->src[0]->type == GGML_TYPE_TQ4_1S;
 
-    return has_simdgroup_mm && ne00 >= 64 && ne21 >= (is_tq ? 1 : 32);
+    return has_simdgroup_mm && ne00 >= 64 && ne02 <= 1024 && ne21 >= (is_tq ? 1 : 32);
 }
 
 // the most src1 rows of the few-row MMA kernels

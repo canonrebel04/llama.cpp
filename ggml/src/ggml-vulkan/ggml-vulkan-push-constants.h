@@ -222,6 +222,9 @@ struct vk_op_count_experts_push_constants {
     uint32_t ne00L;
     uint32_t row_tile_size;
     uint32_t row_ids_offset;
+    uint32_t ne0_dst;
+    uint32_t stride_dst;
+    uint32_t batch_stride_dst;
 };
 
 struct vk_op_glu_push_constants {
@@ -702,6 +705,9 @@ struct vk_op_gated_delta_net_push_constants {
     uint32_t neq1, rq3;
     float scale;
     uint32_t K;
+    uint32_t trailing_snapshots;
+    int32_t selected_token;
+    uint32_t reserve_input;
 };
 
 struct vk_op_ssm_scan_push_constants {

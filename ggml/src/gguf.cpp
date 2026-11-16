@@ -3,6 +3,8 @@
 #include "ggml-impl.h"
 #include "gguf.h"
 
+#define QK_TQ3_4S_COMPAT 32 // block size shared by TQ3_4S and TQ4_1S
+
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
@@ -755,7 +757,7 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
 
             // calculate byte offsets given the tensor shape and type
             info.t.nb[0] = type_size;
-            info.t.nb[1] = info.t.nb[0]*(info.t.ne[0]/blck_size);
+            info.t.nb[1] = ggml_row_size(info.t.type, info.t.ne[0]); // includes per-row metadata of row-scaled types
             for (int j = 2; j < GGML_MAX_DIMS; ++j) {
                 info.t.nb[j] = info.t.nb[j - 1]*info.t.ne[j - 1];
             }
@@ -786,6 +788,44 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
 
     // store the current file offset - this is where the data section starts
     ctx->offset = gr.tell();
+
+    // fork compatibility: turbo-tan/llama.cpp-tq3 writes TQ3_4S as type 46, which is TQ4_1S here.
+    // The two types differ in block size (16 vs 20 bytes per 32 values), so the stored offsets tell
+    // them apart: if some type-46 tensor's span to the next tensor only fits TQ3_4S, and none only
+    // fits TQ4_1S, the file is a turbo-tan TQ3_4S file and every type-46 tensor is retyped to 51.
+    {
+        int n_tq3 = 0, n_tq4 = 0;
+        for (size_t i = 0; i + 1 < ctx->info.size(); ++i) {
+            const gguf_tensor_info & ti = ctx->info[i];
+            if (ti.t.type != GGML_TYPE_TQ4_1S || ctx->info[i + 1].offset < ti.offset) {
+                continue;
+            }
+            const uint64_t span  = ctx->info[i + 1].offset - ti.offset;
+            const int64_t  nblk  = ggml_nelements(&ti.t) / QK_TQ3_4S_COMPAT;
+            const uint64_t pad46 = GGML_PAD((uint64_t) nblk * ggml_type_size(GGML_TYPE_TQ4_1S), ctx->alignment);
+            const uint64_t pad51 = GGML_PAD((uint64_t) nblk * ggml_type_size(GGML_TYPE_TQ3_4S), ctx->alignment);
+            if (span == pad51 && span != pad46) { n_tq3++; }
+            if (span == pad46 && span != pad51) { n_tq4++; }
+        }
+        if (n_tq3 > 0 && n_tq4 == 0) {
+            int n_fixed = 0;
+            for (auto & ti : ctx->info) {
+                if (ti.t.type != GGML_TYPE_TQ4_1S) {
+                    continue;
+                }
+                ti.t.type  = GGML_TYPE_TQ3_4S;
+                ti.t.nb[0] = ggml_type_size(GGML_TYPE_TQ3_4S);
+                ti.t.nb[1] = ti.t.nb[0]*(ti.t.ne[0]/ggml_blck_size(GGML_TYPE_TQ3_4S));
+                for (int j = 2; j < GGML_MAX_DIMS; ++j) {
+                    ti.t.nb[j] = ti.t.nb[j - 1]*ti.t.ne[j - 1];
+                }
+                n_fixed++;
+            }
+            GGML_LOG_WARN("%s: %d tensors stored as type 46 have TQ3_4S-sized data (turbo-tan id); "
+                "treating them as TQ3_4S (id %d). Use gguf-py/gguf/scripts/gguf_fix_tq3_4s.py to fix the file.\n",
+                __func__, n_fixed, (int) GGML_TYPE_TQ3_4S);
+        }
+    }
 
     // compute the total size of the data section, taking into account the alignment
     {
@@ -1463,6 +1503,7 @@ struct gguf_writer_base {
     // we bet on devirtualization
     virtual void write(int8_t val) = 0;
     virtual void write(const std::vector<int8_t> & val) = 0;
+    virtual void write(const void * data, size_t size) = 0;
     virtual void write_tensor_data(const struct gguf_tensor_info & info, size_t offset_data, size_t alignment) = 0;
 
     template <typename T>
@@ -1579,21 +1620,31 @@ struct gguf_writer_buf final : public gguf_writer_base {
         written_bytes += val.size();
     }
 
+    void write(const void * data, const size_t size) override {
+        buf.insert(buf.end(), (const int8_t *) data, (const int8_t *) data + size);
+        written_bytes += size;
+    }
+
     void write_tensor_data(const struct gguf_tensor_info & info, const size_t offset_data, const size_t alignment) override {
         GGML_ASSERT(buf.size() - offset_data == info.offset);
 
         GGML_ASSERT(ggml_is_contiguous(&info.t));
-        const size_t offset = buf.size();
         const size_t nbytes = ggml_nbytes(&info.t);
 
-        buf.resize(offset + nbytes);
-        if (info.t.buffer) {
-            ggml_backend_tensor_get(&info.t, buf.data() + offset, 0, nbytes);
+        if (info.t.buffer && ggml_backend_buffer_is_host(info.t.buffer)) {
+            GGML_ASSERT(info.t.data != NULL && "tensor not allocated");
+            write(info.t.data, nbytes);
         } else {
-            GGML_ASSERT(info.t.data);
-            memcpy(buf.data() + offset, info.t.data, nbytes);
+            const size_t offset = buf.size();
+            buf.resize(offset + nbytes);
+            if (info.t.buffer) {
+                ggml_backend_tensor_get(&info.t, buf.data() + offset, 0, nbytes);
+            } else {
+                GGML_ASSERT(info.t.data);
+                memcpy(buf.data() + offset, info.t.data, nbytes);
+            }
+            written_bytes += nbytes;
         }
-        written_bytes += nbytes;
 
         pad(alignment);
     }
@@ -1624,20 +1675,33 @@ struct gguf_writer_file final : public gguf_writer_base {
         }
     }
 
+    void write(const void * data, const size_t size) override {
+        const auto ret = fwrite(data, 1, size, file);
+        written_bytes += size;
+        if (ret != size) {
+            throw std::runtime_error("unexpected fwrite number of bytes written, '" + std::to_string(ret) + "' instead of '" + std::to_string(size) + "'");
+        }
+    }
+
     void write_tensor_data(const struct gguf_tensor_info & info, const size_t offset_data, const size_t alignment) override {
         GGML_ASSERT(written_bytes - offset_data == info.offset);
 
         GGML_ASSERT(ggml_is_contiguous(&info.t));
         const size_t nbytes = ggml_nbytes(&info.t);
 
-        std::vector<int8_t> buf(nbytes);
-        if (info.t.buffer) {
-            ggml_backend_tensor_get(&info.t, buf.data(), 0, nbytes);
+        if (info.t.buffer && ggml_backend_buffer_is_host(info.t.buffer)) {
+            GGML_ASSERT(info.t.data != NULL && "tensor not allocated");
+            write(info.t.data, nbytes);
         } else {
-            GGML_ASSERT(info.t.data);
-            memcpy(buf.data(), info.t.data, nbytes);
+            std::vector<int8_t> buf(nbytes);
+            if (info.t.buffer) {
+                ggml_backend_tensor_get(&info.t, buf.data(), 0, nbytes);
+            } else {
+                GGML_ASSERT(info.t.data);
+                memcpy(buf.data(), info.t.data, nbytes);
+            }
+            write(buf);
         }
-        write(buf);
 
         pad(alignment);
     }

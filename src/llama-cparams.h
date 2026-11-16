@@ -16,6 +16,7 @@ struct llama_cparams {
     uint32_t n_rs_seq;        // number of recurrent-state snapshots per seq for rollback
     uint32_t n_outputs_max;   // max outputs supported by the context
     uint32_t n_outputs_max_per_seq;
+    uint32_t kv_gpu_layers;
     int32_t  n_threads;       // number of threads to use for generation
     int32_t  n_threads_batch; // number of threads to use for batch processing
 
@@ -40,9 +41,12 @@ struct llama_cparams {
     bool embeddings_nextn_masked; // extract for only rows where batch.logits != 0
     bool mtp_chain;               // DECODER_MTP: chain rows in-graph from the first row's inputs
     bool causal_attn;
-    bool offload_kqv;
+    bool decode_boundary_overlap;
+    bool offload_kqv;             // place persistent attention KV storage on the accelerator
+    bool offload_attn_compute;    // allow attention compute to use the accelerator independently of KV storage
     bool sched_async_cpu;
     bool flash_attn;
+    bool flash_attn_causal_prefix_supported;
     bool auto_fa;
     bool fused_lid;          // use fused lightning indexer
     bool auto_flid;
@@ -53,16 +57,29 @@ struct llama_cparams {
     bool fused_dsv4_hc_comb;
     bool fused_dsv4_hc_post;
     bool auto_fhc;
+    bool fused_top_k_mask;   // use fused top-k sparse attention mask
+    bool auto_ftkm;
+    bool fused_kv_rows;      // unified cache: attend to the cells of each sequence only (ggml_flash_attn_ext_rows)
+    bool auto_fkvr;
     bool no_perf;
     bool warmup;             // TODO: remove [TAG_LLAMA_GRAPH_NO_WARMUP]
     bool op_offload;
     bool kv_unified;
     bool pipeline_parallel;
+    bool kv_cpu_pinned;
+    bool recurrent_state_offload;
+    bool phase_aware_workspace;
+    bool live_context_workspace;
     bool training;           // set by llama_opt_init()
 
     size_t moe_cache_size;
+    float  moe_cache_cpu_share;
+
+    uint32_t kv_stream_arena_mib;
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
+    bool embeddings_layer_inp_dev; // write enabled layer inputs to a device buffer instead of host
+    bool embeddings_nextn_dev;     // write the unmasked h_nextn rows to a device buffer instead of host, see llama_set_embeddings_nextn_dev()
 
     enum llama_context_type ctx_type;
     enum llama_rope_scaling_type rope_scaling_type;
@@ -72,4 +89,7 @@ struct llama_cparams {
     void * cb_eval_user_data;
 
     llama_context * ctx_other;
+
+    // context whose h_nextn device buffer holds the state rows of a batch, see llama_set_embd_state_src()
+    llama_context * ctx_state_src;
 };

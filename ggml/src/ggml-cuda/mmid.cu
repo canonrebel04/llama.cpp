@@ -1,5 +1,195 @@
 #include "common.cuh"
 #include "mmid.cuh"
+#include "mmf.cuh"
+#include "mmvf.cuh"
+#include "mmq.cuh"
+#include "mmvq.cuh"
+
+#include <climits>
+
+ggml_cuda_mmid_source_capability ggml_cuda_mmid_source_capability_for(ggml_type type) {
+    constexpr uint32_t scalar = GGML_CUDA_MMID_SOURCE_ADVERTISED | GGML_CUDA_MMID_SOURCE_SCALAR | GGML_CUDA_MMID_SOURCE_GENERIC;
+    constexpr uint32_t quant = GGML_CUDA_MMID_SOURCE_ADVERTISED | GGML_CUDA_MMID_SOURCE_MMVQ | GGML_CUDA_MMID_SOURCE_MMQ |
+        GGML_CUDA_MMID_SOURCE_MAPPED_MMQ | GGML_CUDA_MMID_SOURCE_GENERIC;
+    constexpr uint32_t fp4 = GGML_CUDA_MMID_SOURCE_ADVERTISED | GGML_CUDA_MMID_SOURCE_MMVQ | GGML_CUDA_MMID_SOURCE_MMQ |
+        GGML_CUDA_MMID_SOURCE_GENERIC;
+    constexpr uint32_t mmvq = GGML_CUDA_MMID_SOURCE_ADVERTISED | GGML_CUDA_MMID_SOURCE_MMVQ | GGML_CUDA_MMID_SOURCE_GENERIC;
+
+    switch (type) {
+        case GGML_TYPE_F32:
+        case GGML_TYPE_F16:
+        case GGML_TYPE_BF16:
+            return {type, scalar};
+        case GGML_TYPE_Q1_0:
+        case GGML_TYPE_Q2_0:
+        case GGML_TYPE_Q4_0:
+        case GGML_TYPE_Q4_1:
+        case GGML_TYPE_Q5_0:
+        case GGML_TYPE_Q5_1:
+        case GGML_TYPE_Q8_0:
+        case GGML_TYPE_Q2_K:
+        case GGML_TYPE_Q3_K:
+        case GGML_TYPE_Q4_K:
+        case GGML_TYPE_Q5_K:
+        case GGML_TYPE_Q6_K:
+        case GGML_TYPE_IQ1_S:
+        case GGML_TYPE_IQ2_S:
+        case GGML_TYPE_IQ2_XS:
+        case GGML_TYPE_IQ2_XXS:
+        case GGML_TYPE_IQ3_S:
+        case GGML_TYPE_IQ3_XXS:
+        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_IQ4_XS:
+            return {type, quant};
+        case GGML_TYPE_MXFP4:
+        case GGML_TYPE_NVFP4:
+            return {type, fp4};
+        case GGML_TYPE_IQ1_M:
+            return {type, mmvq};
+        case GGML_TYPE_Q8_K:
+            return {type, GGML_CUDA_MMID_SOURCE_ADVERTISED};
+        default:
+            return {type, 0};
+    }
+}
+
+ggml_cuda_mmid_capability ggml_cuda_mmid_get_capability(const ggml_cuda_mmid_capability_query & query) {
+    ggml_cuda_mmid_capability result;
+    result.source = ggml_cuda_mmid_source_capability_for(query.source_type);
+    if ((result.source.flags & GGML_CUDA_MMID_SOURCE_ADVERTISED) == 0) {
+        result.reason = GGML_CUDA_MMID_CAPABILITY_UNADVERTISED_SOURCE;
+        return result;
+    }
+    if ((result.source.flags & GGML_CUDA_MMID_SOURCE_GENERIC) == 0) {
+        result.reason = GGML_CUDA_MMID_CAPABILITY_UNSUPPORTED_CONSUMER;
+        return result;
+    }
+    if (query.input_type != GGML_TYPE_F32 || query.output_type != GGML_TYPE_F32) {
+        result.reason = GGML_CUDA_MMID_CAPABILITY_INVALID_IO;
+        return result;
+    }
+    if (query.phase != GGML_CUDA_MMID_PHASE_DECODE && query.phase != GGML_CUDA_MMID_PHASE_PREFILL) {
+        result.reason = GGML_CUDA_MMID_CAPABILITY_INVALID_PHASE;
+        return result;
+    }
+    if ((query.phase == GGML_CUDA_MMID_PHASE_DECODE && query.n_tokens != 1 && !query.independent_rows) ||
+            (query.phase == GGML_CUDA_MMID_PHASE_PREFILL && query.n_tokens <= 1)) {
+        result.reason = GGML_CUDA_MMID_CAPABILITY_INVALID_PHASE;
+        return result;
+    }
+    if (query.mapping != GGML_CUDA_MMID_MAPPING_DIRECT && query.mapping != GGML_CUDA_MMID_MAPPING_SOURCE_MAP) {
+        result.reason = GGML_CUDA_MMID_CAPABILITY_INVALID_MAPPING;
+        return result;
+    }
+    const int64_t block_size = ggml_blck_size(query.source_type);
+    if (query.n_tokens <= 0 || query.n_experts <= 0 || query.source_ne[0] <= 0 || query.source_ne[1] <= 0 ||
+            query.source_ne[2] != query.n_experts || block_size <= 0 || query.source_ne[0] % block_size != 0 ||
+            query.source_nb[0] != ggml_type_size(query.source_type)) {
+        result.reason = GGML_CUDA_MMID_CAPABILITY_INVALID_GEOMETRY;
+        return result;
+    }
+    if (query.cc <= 0 || query.warp_size <= 0 || query.smpbo == 0) {
+        result.reason = GGML_CUDA_MMID_CAPABILITY_INVALID_DEVICE;
+        return result;
+    }
+
+    const bool mapped = query.mapping == GGML_CUDA_MMID_MAPPING_SOURCE_MAP;
+    const auto supported = [&](ggml_cuda_mmid_consumer consumer) {
+        switch (consumer) {
+            case GGML_CUDA_MMID_CONSUMER_MMVQ:
+                return !mapped && (result.source.flags & GGML_CUDA_MMID_SOURCE_MMVQ) != 0 &&
+                    query.n_tokens <= MMVQ_MAX_BATCH_SIZE &&
+                    query.n_tokens <= get_mmvq_mmid_max_batch(query.source_type, query.cc);
+            case GGML_CUDA_MMID_CONSUMER_MMVF:
+                return !mapped && (result.source.flags & GGML_CUDA_MMID_SOURCE_SCALAR) != 0 &&
+                    query.n_tokens <= MMVF_MAX_BATCH_SIZE && GGML_CUDA_CC_IS_AMD(query.cc);
+            case GGML_CUDA_MMID_CONSUMER_MMQ:
+                return query.use_mmq && (result.source.flags & GGML_CUDA_MMID_SOURCE_MMQ) != 0 &&
+                    (!mapped || (result.source.flags & GGML_CUDA_MMID_SOURCE_MAPPED_MMQ) != 0) &&
+                    ggml_cuda_should_use_mmq(query.source_type, query.cc, query.n_tokens, query.n_experts, query.smpbo);
+            case GGML_CUDA_MMID_CONSUMER_MMF:
+                return !mapped && (result.source.flags & GGML_CUDA_MMID_SOURCE_SCALAR) != 0 &&
+                    ggml_cuda_should_use_mmf(query.source_type, query.cc, query.warp_size, query.source_ne, query.source_nb,
+                        query.n_tokens, true);
+            case GGML_CUDA_MMID_CONSUMER_GENERIC:
+                return (result.source.flags & GGML_CUDA_MMID_SOURCE_GENERIC) != 0;
+            case GGML_CUDA_MMID_CONSUMER_UNSUPPORTED:
+                return false;
+        }
+        return false;
+    };
+
+    if (query.preferred_consumer != GGML_CUDA_MMID_CONSUMER_UNSUPPORTED) {
+        if (!supported(query.preferred_consumer)) {
+            result.reason = GGML_CUDA_MMID_CAPABILITY_UNSUPPORTED_CONSUMER;
+            return result;
+        }
+        result.selection = query.preferred_consumer;
+    } else if (supported(GGML_CUDA_MMID_CONSUMER_MMVQ)) {
+        result.selection = GGML_CUDA_MMID_CONSUMER_MMVQ;
+    } else if (supported(GGML_CUDA_MMID_CONSUMER_MMVF)) {
+        result.selection = GGML_CUDA_MMID_CONSUMER_MMVF;
+    } else if (supported(GGML_CUDA_MMID_CONSUMER_MMQ)) {
+        result.selection = GGML_CUDA_MMID_CONSUMER_MMQ;
+    } else if (supported(GGML_CUDA_MMID_CONSUMER_MMF)) {
+        result.selection = GGML_CUDA_MMID_CONSUMER_MMF;
+    } else {
+        result.selection = GGML_CUDA_MMID_CONSUMER_GENERIC;
+    }
+    result.reason = GGML_CUDA_MMID_CAPABILITY_OK;
+    return result;
+}
+
+bool ggml_cuda_mmid_can_use_compact_mmvq(
+        const ggml_cuda_mmid_capability_query & query,
+        int64_t n_compact_experts) {
+    if (query.mapping != GGML_CUDA_MMID_MAPPING_DIRECT || n_compact_experts <= 0 ||
+            query.source_nb[2] > SIZE_MAX / (size_t) n_compact_experts) {
+        return false;
+    }
+    const auto direct = ggml_cuda_mmid_get_capability(query);
+    if (direct.reason != GGML_CUDA_MMID_CAPABILITY_OK || direct.selection != GGML_CUDA_MMID_CONSUMER_MMVQ) {
+        return false;
+    }
+
+    ggml_cuda_mmid_capability_query compact = query;
+    compact.n_experts = n_compact_experts;
+    compact.source_ne[2] = n_compact_experts;
+    compact.source_nb[3] = compact.source_nb[2] * (size_t) n_compact_experts;
+    compact.preferred_consumer = GGML_CUDA_MMID_CONSUMER_MMVQ;
+    const auto capability = ggml_cuda_mmid_get_capability(compact);
+    return capability.reason == GGML_CUDA_MMID_CAPABILITY_OK && capability.selection == GGML_CUDA_MMID_CONSUMER_MMVQ;
+}
+
+bool ggml_cuda_mmid_direct_source_view_valid(
+        const ggml_tensor * source,
+        const ggml_cuda_mmid_direct_source_view & view,
+        ggml_cuda_mmid_consumer consumer) {
+    if (source == nullptr || view.source_type != source->type || view.logical_n_experts <= 0 ||
+            view.logical_n_experts > INT_MAX || view.physical_n_experts <= 0 || view.physical_n_experts > INT_MAX ||
+            view.physical_id_upper_bound <= 0 || view.physical_id_upper_bound > view.physical_n_experts ||
+            view.logical_n_experts > view.physical_n_experts || view.physical_n_experts != source->ne[2] ||
+            source->ne[3] != 1 || view.expert_stride == 0 || view.expert_stride != source->nb[2] ||
+            view.expert_stride > SIZE_MAX / (size_t) view.physical_n_experts ||
+            source->nb[3] != view.expert_stride * (size_t) view.physical_n_experts) {
+        return false;
+    }
+
+    const auto capability = ggml_cuda_mmid_source_capability_for(source->type);
+    switch (consumer) {
+        case GGML_CUDA_MMID_CONSUMER_MMVQ:
+            return (capability.flags & GGML_CUDA_MMID_SOURCE_MMVQ) != 0;
+        case GGML_CUDA_MMID_CONSUMER_MMVF:
+        case GGML_CUDA_MMID_CONSUMER_MMF:
+            return (capability.flags & GGML_CUDA_MMID_SOURCE_SCALAR) != 0;
+        case GGML_CUDA_MMID_CONSUMER_MMQ:
+            return (capability.flags & GGML_CUDA_MMID_SOURCE_MMQ) != 0;
+        case GGML_CUDA_MMID_CONSUMER_UNSUPPORTED:
+        case GGML_CUDA_MMID_CONSUMER_GENERIC:
+            return false;
+    }
+    return false;
+}
 
 // To reduce shared memory use, store "it" and "iex_used" with 22/10 bits each.
 struct mm_ids_helper_store {
@@ -27,12 +217,16 @@ template <>      struct mm_ids_pow2<0> { static constexpr int value = 1; };
 // Helper function for mul_mat_id, converts ids to a more convenient format.
 // ids_src1 describes how to permute the flattened column indices of src1 in order to get a compact src1 tensor sorted by expert.
 // ids_dst describes the same mapping but for the dst tensor.
-// The upper and lower bounds for the ith expert in the compact src1 tensor are stored in expert_bounds[i:i+1].
+// The first (n_tokens*n_expert_used + J - 1) / tile_width elements of tile_spec contain the specication for
+//   matrix multiplication tiles at token positions which are exactly divided by tile_width.
+// Additionally the following n_expert elements of tile_spec may contain additional tiles that fall between these seams.
 template <int n_expert_used_template>
 __launch_bounds__(ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mm_ids_helper(
-        const int32_t * __restrict__ ids, int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, int32_t * __restrict__ expert_bounds,
-        const int n_tokens, const int n_expert_used_var, const int nchannels_y, const int si1, const int sis1, const bool write_inverse) {
+        const int32_t * __restrict__ ids,
+        int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, ggml_cuda_mm_id_tile_spec * __restrict__ tile_spec,
+        const int n_tokens, const int n_expert_used_var, const int nchannels_y, const uint3 tile_width,
+        const int si1, const int sis1, const bool write_inverse) {
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
     const int n_expert_used = n_expert_used_template == 0 ? n_expert_used_var : n_expert_used_template;
     const int expert = blockIdx.x;
@@ -118,19 +312,29 @@ static __global__ void mm_ids_helper(
         return;
     }
 
-    expert_bounds[expert] = nex_prev;
+    int col_low  = nex_prev;
+    int col_high = nex_prev + min(int(tile_width.z), it_compact);
 
-    if (expert < static_cast<int>(gridDim.x) - 1) {
-        return;
+    // The while loop covers all tiles at the seams containing the column with % tile_width == 0.
+    while (col_high > fastdiv(col_low + tile_width.z - 1, tile_width) * tile_width.z) {
+        tile_spec[fastdiv(col_low + tile_width.z - 1, tile_width)]
+            = {expert, col_low, col_high, /*padding =*/ 0};
+
+        col_low  = col_high;
+        col_high = min(col_high + int(tile_width.z), nex_prev + it_compact);
     }
 
-    expert_bounds[gridDim.x] = nex_prev + it_compact;
+    // Finally, at most one extra tile_spec between the seams per expert.
+    tile_spec[fastdiv(n_tokens*n_expert_used + tile_width.z - 1, tile_width) + expert]
+        = {expert, col_low, col_high, /*padding =*/ 0};
 }
 
 template <int n_expert_used_template>
 static void launch_mm_ids_helper(
-        const int32_t * __restrict__ ids, int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, int32_t * __restrict__ expert_bounds,
-        const int n_experts, const int n_tokens, const int n_expert_used_var, const int nchannels_y, const int si1, const int sis1, const bool write_inverse, cudaStream_t stream) {
+        const int32_t * __restrict__ ids,
+        int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, ggml_cuda_mm_id_tile_spec * __restrict__ tile_spec,
+        const int n_experts, const int n_tokens, const int n_expert_used_var, const int nchannels_y, const int tile_width,
+        const int si1, const int sis1, const bool write_inverse, cudaStream_t stream) {
     GGML_ASSERT(n_tokens          < (1 << 22) && "too few bits in mm_ids_helper_store");
     GGML_ASSERT(n_expert_used_var < (1 << 10) && "too few bits in mm_ids_helper_store");
 
@@ -139,12 +343,14 @@ static void launch_mm_ids_helper(
     const size_t smpbo = ggml_cuda_info().devices[id].smpbo;
     CUDA_SET_SHARED_MEMORY_LIMIT(mm_ids_helper<n_expert_used_template>, smpbo);
 
+    const uint3 tile_width_fd = init_fastdiv_values(tile_width);
+
     const dim3 num_blocks(n_experts, 1, 1);
     const dim3 block_size(warp_size, 1, 1);
     const size_t nbytes_shared = n_tokens*sizeof(mm_ids_helper_store);
     GGML_ASSERT(nbytes_shared <= smpbo);
     mm_ids_helper<n_expert_used_template><<<num_blocks, block_size, nbytes_shared, stream>>>
-        (ids, ids_src1, ids_dst, expert_bounds, n_tokens, n_expert_used_var, nchannels_y, si1, sis1, write_inverse);
+        (ids, ids_src1, ids_dst, tile_spec, n_tokens, n_expert_used_var, nchannels_y, tile_width_fd, si1, sis1, write_inverse);
 }
 
 // Zero the dst rows of (token, slot) pairs whose expert id is -1 ("expert not owned by
@@ -177,32 +383,42 @@ void ggml_cuda_launch_mm_ids_zero_skipped_rows(
 }
 
 void ggml_cuda_launch_mm_ids_helper(
-        const int32_t * __restrict__ ids, int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, int32_t * __restrict__ expert_bounds,
-        const int n_experts, const int n_tokens, const int n_expert_used, const int nchannels_y, const int si1, const int sis1, const bool write_inverse, cudaStream_t stream) {
+        const int32_t * __restrict__ ids,
+        int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, ggml_cuda_mm_id_tile_spec * __restrict__ tile_spec,
+        const int n_experts, const int n_tokens, const int n_expert_used, const int nchannels_y, const int tile_width,
+        const int si1, const int sis1, const bool write_inverse, cudaStream_t stream) {
     switch (n_expert_used) {
         case  2:
-            launch_mm_ids_helper< 2>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+            launch_mm_ids_helper< 2>(ids, ids_src1, ids_dst, tile_spec,
+                n_experts, n_tokens, n_expert_used, nchannels_y, tile_width, si1, sis1, write_inverse, stream);
             break;
         case  4:
-            launch_mm_ids_helper< 4>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+            launch_mm_ids_helper< 4>(ids, ids_src1, ids_dst, tile_spec,
+                n_experts, n_tokens, n_expert_used, nchannels_y, tile_width, si1, sis1, write_inverse, stream);
             break;
         case  6:
-            launch_mm_ids_helper< 6>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+            launch_mm_ids_helper< 6>(ids, ids_src1, ids_dst, tile_spec,
+                n_experts, n_tokens, n_expert_used, nchannels_y, tile_width, si1, sis1, write_inverse, stream);
             break;
         case  8:
-            launch_mm_ids_helper< 8>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+            launch_mm_ids_helper< 8>(ids, ids_src1, ids_dst, tile_spec,
+                n_experts, n_tokens, n_expert_used, nchannels_y, tile_width, si1, sis1, write_inverse, stream);
             break;
         case 10:
-            launch_mm_ids_helper<10>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+            launch_mm_ids_helper<10>(ids, ids_src1, ids_dst, tile_spec,
+                n_experts, n_tokens, n_expert_used, nchannels_y, tile_width, si1, sis1, write_inverse, stream);
             break;
         case 16:
-            launch_mm_ids_helper<16>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+            launch_mm_ids_helper<16>(ids, ids_src1, ids_dst, tile_spec,
+                n_experts, n_tokens, n_expert_used, nchannels_y, tile_width, si1, sis1, write_inverse, stream);
             break;
         case 32:
-            launch_mm_ids_helper<32>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+            launch_mm_ids_helper<32>(ids, ids_src1, ids_dst, tile_spec,
+                n_experts, n_tokens, n_expert_used, nchannels_y, tile_width, si1, sis1, write_inverse, stream);
             break;
         default:
-            launch_mm_ids_helper< 0>(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, write_inverse, stream);
+            launch_mm_ids_helper< 0>(ids, ids_src1, ids_dst, tile_spec,
+                n_experts, n_tokens, n_expert_used, nchannels_y, tile_width, si1, sis1, write_inverse, stream);
             break;
     }
 }

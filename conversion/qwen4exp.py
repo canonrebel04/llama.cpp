@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, cast
+from typing import Callable, Iterable, cast
 
 import torch
 from torch import Tensor
@@ -21,6 +21,9 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
     Shares the Qwen3.5 gated delta net and interleaved mrope, and adds three things:
     hyper-connections in place of every layer norm, QSA sparse attention on the full
     attention layers, and PLE n-gram hash embeddings on a single layer.
+
+    The checkpoint also carries a NextN/MTP draft head under `mtp.*`, exported as a
+    trailing block; pass --no-nextn to leave it out.
     """
 
     model_arch = gguf.MODEL_ARCH.QWEN4EXP
@@ -28,31 +31,51 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
     # the MTP head: one full-attention QSA block after the trunk, fed by the trunk's hc-wide residual
     supports_mtp_export = True
 
-    # MTP tensors the shared Qwen remapper does not know
-    _MTP_EXTRA = {
-        "fc_embedding":           "nextn_fc_embedding",
-        "fc_hidden":              "nextn_fc_hidden",
-        "hyper_connection_mixer": "nextn_hc_head",
-    }
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # only the shard names, so the table itself is never held
         self._ple_shards: dict[int, str] = {}
         self._ple_row_dim: int | None = None
         self._mtp_fc: dict[str, Tensor] = {}
+        # halves of the merged weights, keyed by (bid, merged tensor), see _merge_shared_input
+        self._merge_parts: dict[tuple[int, gguf.MODEL_TENSOR], dict[int, Tensor]] = {}
+
+    # _QwenMtpMixin renames mtp.layers.0.* to the trailing block index, so the head reuses the
+    # existing qwen4exp mappings; only the two pieces below differ.
+    _MTP_MIXER_PREFIX = "mtp.hyper_connection_mixer."
 
     @classmethod
     def filter_tensors(cls, item):
+        # unindexed in the checkpoint, per-block in the GGUF
         name, gen = item
-        part = name.split(".")[1] if name.startswith("mtp.") else None
-        if part in cls._MTP_EXTRA:
+        if name.startswith("model." + cls._MTP_MIXER_PREFIX):
+            name = name.replace("model.", "", 1)
+        if name.startswith(cls._MTP_MIXER_PREFIX):
             if cls.no_mtp:
                 return None
             assert cls._original_block_count is not None
-            rest = name.split(".", 2)[2]
-            return f"model.layers.{cls._original_block_count}.{cls._MTP_EXTRA[part]}.{rest}", gen
-        return super().filter_tensors(item)
+            return f"model.layers.{cls._original_block_count}.{name[len('mtp.'):]}", gen
+        return super().filter_tensors((name, gen))
+
+    def index_tensors(self, remote_hf_model_id: str | None = None) -> dict[str, Callable[[], Tensor]]:
+        # W_e@e + W_h@h == [W_e|W_h] @ concat(e, h), so fc_embedding and fc_hidden fuse into eh_proj
+        tensors = super().index_tensors(remote_hf_model_id=remote_hf_model_id)
+
+        emb = tensors.pop("mtp.fc_embedding.weight", None)
+        hid = tensors.pop("mtp.fc_hidden.weight", None)
+        if emb is None and hid is None:
+            return tensors
+        if emb is None or hid is None:
+            raise ValueError(
+                "the qwen4exp MTP combiner needs both mtp.fc_embedding.weight and "
+                "mtp.fc_hidden.weight; pass --no-nextn to convert without the draft head"
+            )
+
+        assert self._original_block_count is not None
+        # fc_embedding first: the graph concatenates the embedding ahead of the hidden state
+        name = f"model.layers.{self._original_block_count}.eh_proj.weight"
+        tensors[name] = lambda: torch.cat([emb(), hid()], dim=1)
+        return tensors
 
     def _read_hash_constants(self, suffix: str) -> list[int]:
         """Read an int64 PLE constant straight from the checkpoint.
@@ -131,44 +154,79 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
         # int64 hash constants must stay exact; 1-D tensors force F32, so use KV
         if name.endswith("ple_embedding.layer_multipliers"):
             self._ple_multipliers = [int(x) for x in data_torch.tolist()]
-            return []
+            return
         if name.endswith("ple_embedding.ngram_heads_offsets"):
             self._ple_head_offsets = [int(x) for x in data_torch.tolist()]
-            return []
+            return
         if name.endswith("ple_embedding.ngram_heads_vocab_sizes"):
             self._ple_head_vocab_sizes = [int(x) for x in data_torch.tolist()]
-            return []
+            return
 
         if ".ngram_embedding.shard_" in name:
-            return self._place_ple_shard(data_torch, name)
+            yield from self._place_ple_shard(data_torch, name)
+            return
 
         # eh_proj([e ; h_s]) = fc_embedding(e) + fc_hidden(h_s) for every hc stream s
         if name.endswith((".nextn_fc_embedding.weight", ".nextn_fc_hidden.weight")):
             self._mtp_fc[name.rsplit(".", 2)[1]] = data_torch
             if len(self._mtp_fc) < 2:
-                return []
+                return
             eh = torch.cat([self._mtp_fc.pop("nextn_fc_embedding"), self._mtp_fc.pop("nextn_fc_hidden")], dim=1)
-            return [(self.format_tensor_name(gguf.MODEL_TENSOR.NEXTN_EH_PROJ, bid, ".weight"), eh)]
+            yield (self.format_tensor_name(gguf.MODEL_TENSOR.NEXTN_EH_PROJ, bid, ".weight"), eh)
+            return
 
         # one projection feeds indexer q and k; split it, as minimax-m3 does
         if ".indexer.index_qk_proj.weight" in name:
             n_q = self.hparams["indexer_n_heads"] * self.hparams["indexer_head_dim"]
-            q = data_torch[:n_q]
-            k = data_torch[n_q:]
-            return [
-                (self.format_tensor_name(gguf.MODEL_TENSOR.INDEXER_Q_PROJ, bid, ".weight"), q),
-                (self.format_tensor_name(gguf.MODEL_TENSOR.INDEXER_K_PROJ, bid, ".weight"), k),
-            ]
+            yield (self.format_tensor_name(gguf.MODEL_TENSOR.INDEXER_Q_PROJ, bid, ".weight"), data_torch[:n_q])
+            yield (self.format_tensor_name(gguf.MODEL_TENSOR.INDEXER_K_PROJ, bid, ".weight"), data_torch[n_q:])
+            return
 
         # Gemma zero-centred gammas the inherited norm.weight rule misses
         if name.endswith((".ple.norm_key.weight", ".ple.norm_query.weight", ".ple.norm_conv.weight",
                           ".indexer.q_layernorm.weight", ".indexer.k_layernorm.weight")):
-            return [(self.map_tensor_name(name), data_torch + 1)]
+            yield (self.map_tensor_name(name), data_torch + 1)
+            return
 
         if name.endswith(".ple.conv1d.weight"):
-            return [(self.map_tensor_name(name), data_torch.squeeze())]
+            yield (self.map_tensor_name(name), data_torch.squeeze())
+            return
 
-        return super().modify_tensors(data_torch, name, bid)
+        for new_name, data in super().modify_tensors(data_torch, name, bid):
+            yield from self._merge_shared_input(new_name, data, bid)
+
+    # matmuls that read the same input, written as one weight [a | b] so the runtime does one matmul:
+    # (merged tensor, (a, b), linear-attention layers only)
+    _SHARED_INPUT_MERGES = (
+        (gguf.MODEL_TENSOR.HC_ATTN_DOWN_INJECT, (gguf.MODEL_TENSOR.HC_ATTN_DOWN, gguf.MODEL_TENSOR.HC_ATTN_INJECT), False),
+        (gguf.MODEL_TENSOR.HC_FFN_DOWN_INJECT,  (gguf.MODEL_TENSOR.HC_FFN_DOWN,  gguf.MODEL_TENSOR.HC_FFN_INJECT),  False),
+        (gguf.MODEL_TENSOR.ATTN_QKV_GATE,       (gguf.MODEL_TENSOR.ATTN_QKV,     gguf.MODEL_TENSOR.ATTN_GATE),      True),
+        (gguf.MODEL_TENSOR.SSM_BETA_ALPHA_CAT,  (gguf.MODEL_TENSOR.SSM_BETA,     gguf.MODEL_TENSOR.SSM_ALPHA),      True),
+    )
+
+    # caches one half of a merged weight until the other half arrives, then yields [a | b]
+    def _merge_shared_input(self, new_name: str, data: Tensor, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # a pre-quantized checkpoint carries per-tensor scales, which one merged weight cannot hold
+        if bid is None or self.hparams.get("quantization_config"):
+            yield (new_name, data)
+            return
+
+        layer_types = self.hparams.get("layer_types") or []
+        is_linear = bid < len(layer_types) and layer_types[bid] == "linear_attention"
+
+        match = next(((merged, parts.index(part)) for merged, parts, linear_only in self._SHARED_INPUT_MERGES
+                      for part in parts
+                      if (is_linear or not linear_only) and self.match_model_tensor_name(new_name, part, bid)), None)
+        if match is None:
+            yield (new_name, data)
+            return
+
+        merged, idx = match
+        halves = self._merge_parts.setdefault((bid, merged), {})
+        halves[idx] = data
+        if len(halves) == 2:
+            del self._merge_parts[(bid, merged)]
+            yield (self.format_tensor_name(merged, bid), torch.cat([halves[0], halves[1]], dim=0))
 
     # the shards concatenate into a tensor of well over 100 GB
     # use LazyChunkedTensor here, a single shard resident at a time
@@ -214,6 +272,8 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
         super().prepare_tensors()
         if self._mtp_fc:
             raise ValueError(f"MTP projection missing its other half: {sorted(self._mtp_fc)}")
+        if self._merge_parts:
+            raise ValueError(f"merged weights missing a half: {sorted((bid, t.name) for bid, t in self._merge_parts)}")
         n_parts = self.hparams.get("split_ngram_parts", 0)
         if self._ple_shards and len(self._ple_shards) != n_parts:
             raise ValueError(

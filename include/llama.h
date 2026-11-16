@@ -158,11 +158,32 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q2_0          = 41, // except 1d tensors
-        LLAMA_FTYPE_MOSTLY_Q8_CR         = 42, // except 1d tensors
+        LLAMA_FTYPE_MOSTLY_F8_E4M3       = 42, // except 1d tensors (upstream)
+        LLAMA_FTYPE_MOSTLY_Q8_CR         = 48, // except 1d tensors (fork; was 42 before upstream took 42 for F8_E4M3)
         LLAMA_FTYPE_MOSTLY_TQ3_1S        = 43, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_TQ4_1S        = 44, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q5_CR         = 45, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q6_CR         = 46, // except 1d tensors
+        LLAMA_FTYPE_MOSTLY_TQ3_4S        = 47, // except 1d tensors (fork)
+        LLAMA_FTYPE_MOSTLY_PQ2_0         = 141, // except 1d tensors (Prism group-128 Q2_0; same value as PrismML)
+        LLAMA_FTYPE_MOSTLY_PQ2_0_LEGACY  = 142, // older PrismML value for the same format
+        LLAMA_FTYPE_MOSTLY_PTQ1_0        = 143, // except 1d tensors (Prism group-128 ternary, 1.75 bpw)
+        // ik_llama.cpp IQ_K types; ik uses 138-142, which collide with the Prism values above
+        LLAMA_FTYPE_MOSTLY_IQ2_K           = 148, // except 1d tensors (ik_llama.cpp)
+        LLAMA_FTYPE_MOSTLY_IQ3_K           = 149, // except 1d tensors (ik_llama.cpp)
+        LLAMA_FTYPE_MOSTLY_IQ4_K           = 150, // except 1d tensors (ik_llama.cpp)
+        LLAMA_FTYPE_MOSTLY_IQ5_K           = 151, // except 1d tensors (ik_llama.cpp)
+        LLAMA_FTYPE_MOSTLY_IQ6_K           = 152, // except 1d tensors (ik_llama.cpp)
+        LLAMA_FTYPE_MOSTLY_IQ4_KS          = 153, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ2_KS          = 154, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ4_KSS         = 155, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ5_KS          = 156, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ3_KS          = 157, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ2_KL          = 158, // except 1d tensors (ik_llama.cpp row-scaled)
+        LLAMA_FTYPE_MOSTLY_IQ1_KT             = 159, // except 1d tensors (ik_llama.cpp trellis)
+        LLAMA_FTYPE_MOSTLY_IQ2_KT             = 160, // except 1d tensors (ik_llama.cpp trellis)
+        LLAMA_FTYPE_MOSTLY_IQ3_KT             = 161, // except 1d tensors (ik_llama.cpp trellis)
+        LLAMA_FTYPE_MOSTLY_IQ4_KT             = 162, // except 1d tensors (ik_llama.cpp trellis)
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
@@ -230,6 +251,7 @@ extern "C" {
     enum llama_context_type {
         LLAMA_CONTEXT_TYPE_DEFAULT = 0,
         LLAMA_CONTEXT_TYPE_MTP     = 1,
+        LLAMA_CONTEXT_TYPE_DRAFT   = 2,
     };
 
     enum llama_moe_cache_mode {
@@ -284,6 +306,27 @@ extern "C" {
         int8_t       *  logits;   // TODO: rename this to "output"
     } llama_batch;
 
+#define LLAMA_DECODE_EXECUTION_INTENT_MAGIC   0x4c444931u
+#define LLAMA_DECODE_EXECUTION_INTENT_VERSION 1u
+
+    enum llama_decode_execution_intent_type {
+        LLAMA_DECODE_EXECUTION_INTENT_TARGET_VERIFICATION = 1,
+    };
+
+    enum llama_decode_execution_intent_flag {
+        LLAMA_DECODE_EXECUTION_INTENT_FLAG_NONE = 0,
+    };
+
+    typedef struct llama_decode_execution_intent {
+        uint32_t magic;
+        uint32_t abi_version;
+        uint32_t struct_size;
+        uint32_t type;
+        uint32_t flags;
+        uint32_t verification_span;
+        uint64_t reserved[4];
+    } llama_decode_execution_intent;
+
     enum llama_model_kv_override_type {
         LLAMA_KV_OVERRIDE_TYPE_INT,
         LLAMA_KV_OVERRIDE_TYPE_FLOAT,
@@ -337,6 +380,8 @@ extern "C" {
         const struct llama_model_tensor_buft_override * tensor_buft_overrides;
 
         int32_t n_gpu_layers; // number of layers to store in VRAM, a negative value means all layers
+        int32_t moe_expert_cache_slots; // # of MoE expert slabs to keep cached on GPU (LRU). 0 = disabled.
+        size_t moe_expert_cache_host_pinned_size; // model-wide pinned host budget in bytes; 0 keeps full pinning
         enum llama_split_mode split_mode; // how to split the model across multiple GPUs
         enum llama_load_mode  load_mode;  // how to load the model
 
@@ -363,6 +408,9 @@ extern "C" {
         const char * moe_cache_profile; // routing profile CSV from llama-moe-trace (NULL = disabled)
         int32_t      moe_cache_slots;   // experts cached per layer (0 = disabled)
 
+        // target for a draft head that declares nextn_shared_target_tensors; must outlive this model
+        const struct llama_model * model_shared;
+
         // Keep the booleans together to avoid misalignment during copy-by-value.
         bool vocab_only;      // only load the vocabulary, no weights
         bool check_tensors;   // validate model tensor data
@@ -387,6 +435,7 @@ extern "C" {
         uint32_t n_rs_seq;              // number of recurrent-state snapshots per seq for rollback (0 = no rollback) [EXPERIMENTAL]
         uint32_t n_outputs_max;         // max outputs in a ubatch (0 = n_batch)
         uint32_t n_outputs_max_per_seq; // max outputs per sequence (0 = n_outputs_max)
+        uint32_t kv_gpu_layers;         // with offload_kqv=false, keep this many standard or direct hybrid attention KV layers on their assigned devices
         int32_t  n_threads;             // number of threads to use for generation
         int32_t  n_threads_batch;       // number of threads to use for batch processing
 
@@ -414,7 +463,8 @@ extern "C" {
 
         enum llama_moe_cache_mode moe_cache_mode; // runtime MoE expert cache mode
         size_t moe_cache_budget_mib;               // 0 uses the provider's available-memory budget
-        size_t moe_cache_size; // device cache in bytes for the experts kept in host memory, split among the devices like the layers, 0 = disabled [EXPERIMENTAL]
+        size_t moe_cache_size;      // device cache in bytes for the experts kept in host memory, split among the devices like the layers, 0 = disabled [EXPERIMENTAL]
+        float  moe_cache_cpu_share; // share of the MoE cache misses computed on the CPU instead of uploaded, 0 = all uploaded [EXPERIMENTAL]
 
         // Abort callback
         // if it returns true, execution of llama_decode() will be aborted
@@ -423,7 +473,7 @@ extern "C" {
         void *              abort_callback_data;
 
         // Keep the booleans together and at the end of the struct to avoid misalignment during copy-by-value.
-        bool embeddings;  // if true, extract embeddings (together with logits)
+        bool embeddings;  // if true, extract embeddings (together with logits, except for a pooling type other than NONE)
         bool offload_kqv; // offload the KQV ops (including the KV cache) to GPU
         bool no_perf;     // measure performance timings
         bool op_offload;  // offload host tensor operations to device
@@ -434,6 +484,11 @@ extern "C" {
         bool kv_unified;  // use a unified buffer across the input sequences when computing the attention
                           // try to disable when n_seq_max > 1 for improved performance when the sequences do not share a large prefix
                           // ref: https://github.com/ggml-org/llama.cpp/pull/14363
+        bool kv_cpu_pinned;           // use pinned host buffers for CPU-resident KV cache storage when available
+        bool recurrent_state_offload; // offload recurrent state independently of attention KV storage
+        bool phase_aware_workspace;   // resize this context's compute scheduler between prompt processing and token generation
+        bool live_context_workspace;  // grow supported attention workspace plans with the padded live physical KV extent
+        bool decode_boundary_overlap; // experimental: overlap decode boundary preparation and update CUDA graphs
 
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
@@ -441,9 +496,16 @@ extern "C" {
         struct llama_sampler_seq_config * samplers;
         size_t                            n_samplers;
 
-        // a source/target/parent context
-        // can be utilized in various ways, for example by sharing results or llama_memory between 2 contexts
+        // A source/target/parent context that can share results or llama_memory.
         struct llama_context * ctx_other;
+
+        // [EXPERIMENTAL] block-granular KV cache streaming: total shared CUDA
+        // arena (compute workspace + resident KV pages + transfer ring), in
+        // MiB. 0 disables streaming.
+        // Appended here (not with the other [EXPERIMENTAL] fields above) so
+        // a caller built against a pre-streaming header keeps the same
+        // offsets for every field before it.
+        uint32_t kv_stream_arena_mib;
     };
 
     struct llama_model_tensor_override {
@@ -1021,6 +1083,7 @@ extern "C" {
     // For encode-decoder contexts, processes the batch using the encoder.
     // Can store the encoder output internally for later use by the decoder's cross-attention layers.
     //   0 - success
+    //  -2 - failed to prepare or allocate execution resources
     // < 0 - error. the memory state is restored to the state before this call
     LLAMA_API int32_t llama_encode(
             struct llama_context * ctx,
@@ -1037,10 +1100,17 @@ extern "C" {
     //    1 - could not find a KV slot for the batch (try reducing the size of the batch or increase the context)
     //    2 - aborted     (processed ubatches will remain in the context's memory)
     //   -1 - invalid input batch
+    //   -2 - failed to prepare or allocate execution resources
     // < -1 - fatal error (processed ubatches will remain in the context's memory)
     LLAMA_API int32_t llama_decode(
             struct llama_context * ctx,
               struct llama_batch   batch);
+
+    // A null intent has the same behavior as llama_decode().
+    LLAMA_API int32_t llama_decode_ext(
+            struct llama_context *                  ctx,
+              struct llama_batch                    batch,
+        const struct llama_decode_execution_intent * intent);
 
     //
     // Extended batch API
@@ -1091,7 +1161,8 @@ extern "C" {
     // "state" here means extra hidden state carried over from a previous stage, e.g.:
     //   - MTP: state from N layers of the target model
     //   - Qwen3 VL (deepstack): state from N layers of the vision encoder
-    // Returns false if the context does not take a state embedding (currently only MTP contexts do)
+    //   - LiliCorr: context embeddings for the transformers
+    // Returns false if the context does not take a state embedding (MTP and LiliCorr contexts do)
     LLAMA_API bool llama_batch_ext_set_embd_state(
                                 struct llama_batch_ext * batch,
                                                int32_t   idx,
@@ -1127,6 +1198,27 @@ extern "C" {
                                 struct llama_context * ctx,
                              enum llama_process_type   type,
                               struct llama_batch_ext * batch);
+    // Extended batches with a validated execution role. A null intent is equivalent to llama_process().
+    // Non-null intents are supported only for decoding complete, token-only target-verification spans.
+    // Each span must fit in n_ubatch; physical batches never split a span.
+    LLAMA_API int32_t llama_process_ext(
+                                struct llama_context * ctx,
+                             enum llama_process_type   type,
+                              struct llama_batch_ext * batch,
+            const struct llama_decode_execution_intent * intent);
+
+    // Describes the role of subsequent llama_decode() batches for
+    // phase-specialized memory allocators. It does not change model math.
+    enum llama_decode_phase {
+        LLAMA_DECODE_PHASE_AUTOMATIC  = 0,
+        LLAMA_DECODE_PHASE_PROMPT     = 1,
+        LLAMA_DECODE_PHASE_GENERATION = 2,
+    };
+
+    // The selected phase remains active until changed. AUTOMATIC preserves
+    // the traditional token-count heuristic for callers without phase state.
+    LLAMA_API void llama_set_decode_phase(
+        struct llama_context * ctx, enum llama_decode_phase phase);
 
     // Set the number of threads used for decoding
     // n_threads is the number of threads used for generation (single token)
@@ -1589,6 +1681,9 @@ extern "C" {
                const llama_token * trigger_tokens,
                             size_t num_trigger_tokens);
 
+    /// Returns true when a grammar sampler is currently constraining candidates.
+    LLAMA_API bool llama_sampler_grammar_is_active(const struct llama_sampler * smpl);
+
 
     /// NOTE: Avoid using on the full vocabulary as searching for repeated tokens can become slow. For example, apply top-k or top-p sampling first.
     LLAMA_API struct llama_sampler * llama_sampler_init_penalties(
@@ -1597,6 +1692,10 @@ extern "C" {
                                float   penalty_repeat,   // must be > 0.0, 1.0 = disabled
                                float   penalty_freq,     // must be finite, 0.0 = disabled
                                float   penalty_present); // must be finite, 0.0 = disabled
+
+    /// maximum number of distinct DRY sequence breakers, duplicates not counted
+    /// processing each breaker scans the entire vocabulary, so the init cost is O(num_breakers x n_vocab)
+    #define LLAMA_DRY_MAX_SEQ_BREAKERS 64
 
     ///  @details DRY sampler, designed by p-e-w, as described in: https://github.com/oobabooga/text-generation-webui/pull/5677, porting Koboldcpp implementation authored by pi6am: https://github.com/LostRuins/koboldcpp/pull/982
     LLAMA_API struct llama_sampler * llama_sampler_init_dry(
@@ -1721,6 +1820,8 @@ extern "C" {
         int32_t n_p_eval;   // number of prompt tokens
         int32_t n_eval;     // number of generated tokens
         int32_t n_reused;   // number of times a ggml compute graph had been reused
+        int32_t n_reallocs_same; // number of graph reallocations during inference with an unchanged graph size
+        int32_t n_reallocs_diff; // number of graph reallocations during inference with a changed graph size
     };
 
     struct llama_perf_sampler_data {

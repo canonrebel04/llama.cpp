@@ -47,6 +47,19 @@ layout (binding = 2, std430) restrict readonly buffer V_PACKED_TURBO3_0 { block_
 layout (binding = 1, std430) restrict readonly buffer K_PACKED_TURBO4_0 { block_turbo4_0 data[]; } k_packed_turbo4_0;
 layout (binding = 2, std430) restrict readonly buffer V_PACKED_TURBO4_0 { block_turbo4_0 data[]; } v_packed_turbo4_0;
 
+layout (binding = 1, std430) restrict readonly buffer K_PACKED_Q6_0 { block_q6_0 data[]; } k_packed_q6_0;
+layout (binding = 2, std430) restrict readonly buffer V_PACKED_Q6_0 { block_q6_0 data[]; } v_packed_q6_0;
+layout (binding = 1, std430) restrict readonly buffer K_PACKED_Q6_1 { block_q6_1 data[]; } k_packed_q6_1;
+layout (binding = 2, std430) restrict readonly buffer V_PACKED_Q6_1 { block_q6_1 data[]; } v_packed_q6_1;
+layout (binding = 1, std430) restrict readonly buffer K_PACKED_Q3_0 { block_q3_0 data[]; } k_packed_q3_0;
+layout (binding = 2, std430) restrict readonly buffer V_PACKED_Q3_0 { block_q3_0 data[]; } v_packed_q3_0;
+layout (binding = 1, std430) restrict readonly buffer K_PACKED_Q3_1 { block_q3_1 data[]; } k_packed_q3_1;
+layout (binding = 2, std430) restrict readonly buffer V_PACKED_Q3_1 { block_q3_1 data[]; } v_packed_q3_1;
+layout (binding = 1, std430) restrict readonly buffer K_PACKED_Q2_0S { block_q2_0s data[]; } k_packed_q2_0s;
+layout (binding = 2, std430) restrict readonly buffer V_PACKED_Q2_0S { block_q2_0s data[]; } v_packed_q2_0s;
+layout (binding = 1, std430) restrict readonly buffer K_PACKED_Q2_1 { block_q2_1 data[]; } k_packed_q2_1;
+layout (binding = 2, std430) restrict readonly buffer V_PACKED_Q2_1 { block_q2_1 data[]; } v_packed_q2_1;
+
 // Q4_1 and Q5_1 packed32 views: aliased to the same memory as the packed16
 // views, used by the MMQ K-side hot path for fast 4-uint loads.
 layout (binding = 1) readonly buffer K_PACKED_Q4_1_P32 { block_q4_1_packed32 data[]; } k_packed_q4_1_p32;
@@ -181,6 +194,41 @@ layout (binding = 1) readonly buffer K_PACKED_Q5_1_P32 { block_q5_1_packed32 dat
     return FLOAT_TYPE(norm) * FLOAT_TYPEV4(c[i0], c[i1], c[i2], c[i3]);                           \
 }
 
+// beellama KV types (32-element blocks, iqs%4==0). Q6: element e<16 -> low nibble of
+// qs[e], high bits (h&3); e>=16 -> high nibble of qs[e-16], (h>>2)&3, h from qh[(e%16)%8].
+#define FA_BEE_Q6(BUF, OFF, MADD) {                                                               \
+    const uint jb = iqs & 0xFu; const bool hi = iqs >= 16u;                                       \
+    FLOAT_TYPEV4 r;                                                                               \
+    [[unroll]] for (uint t = 0; t < 4; ++t) {                                                     \
+        const uint j = jb + t;                                                                    \
+        const uint q = uint(BUF.data[a_offset + ib].qs[j]);                                       \
+        const uint h = (uint(BUF.data[a_offset + ib].qh[j % 8u]) >> (4u*(j / 8u))) & 0xFu;        \
+        const uint v = hi ? ((q >> 4) | ((h & 0xCu) << 2)) : ((q & 0xFu) | ((h & 3u) << 4));      \
+        r[t] = FLOAT_TYPE(float(int(v) - OFF));                                                   \
+    }                                                                                             \
+    return FLOAT_TYPE(BUF.data[a_offset + ib].d) * r MADD;                                        \
+}
+#define FA_BEE_LO(BUF, OFF, QHEXPR, MADD) {                                                       \
+    const uint qh = QHEXPR;                                                                       \
+    FLOAT_TYPEV4 r;                                                                               \
+    [[unroll]] for (uint t = 0; t < 4; ++t) {                                                     \
+        const uint j = iqs + t;                                                                   \
+        const uint v = ((uint(BUF.data[a_offset + ib].qs[j % 8u]) >> (2u*(j / 8u))) & 3u)         \
+                     | (((qh >> j) & 1u) << 2);                                                   \
+        r[t] = FLOAT_TYPE(float(int(v) - OFF));                                                   \
+    }                                                                                             \
+    return FLOAT_TYPE(BUF.data[a_offset + ib].d) * r MADD;                                        \
+}
+#define FA_BEE_QH32(BUF) (uint(BUF.data[a_offset + ib].qh[0]) | (uint(BUF.data[a_offset + ib].qh[1]) << 8) \
+                        | (uint(BUF.data[a_offset + ib].qh[2]) << 16) | (uint(BUF.data[a_offset + ib].qh[3]) << 24))
+#define FA_BEE_M(BUF) + FLOAT_TYPE(BUF.data[a_offset + ib].m)
+#define FA_DEQUANT4_Q6_0(BUF)  FA_BEE_Q6(BUF, 32, )
+#define FA_DEQUANT4_Q6_1(BUF)  FA_BEE_Q6(BUF, 0, FA_BEE_M(BUF))
+#define FA_DEQUANT4_Q3_0(BUF)  FA_BEE_LO(BUF, 4, FA_BEE_QH32(BUF), )
+#define FA_DEQUANT4_Q3_1(BUF)  FA_BEE_LO(BUF, 0, FA_BEE_QH32(BUF), FA_BEE_M(BUF))
+#define FA_DEQUANT4_Q2_0S(BUF) FA_BEE_LO(BUF, 2, 0u, )
+#define FA_DEQUANT4_Q2_1(BUF)  FA_BEE_LO(BUF, 0, 0u, FA_BEE_M(BUF))
+
 FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
         switch (FaTypeK) {
@@ -195,6 +243,12 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
             case GGML_TYPE_TURBO2_0: FA_DEQUANT4_TURBO2_0(k_packed_turbo2_0)
             case GGML_TYPE_TURBO3_0: FA_DEQUANT4_TURBO3_0(k_packed_turbo3_0)
             case GGML_TYPE_TURBO4_0: FA_DEQUANT4_TURBO4_0(k_packed_turbo4_0)
+            case GGML_TYPE_Q6_0: FA_DEQUANT4_Q6_0(k_packed_q6_0)
+            case GGML_TYPE_Q6_1: FA_DEQUANT4_Q6_1(k_packed_q6_1)
+            case GGML_TYPE_Q3_0: FA_DEQUANT4_Q3_0(k_packed_q3_0)
+            case GGML_TYPE_Q3_1: FA_DEQUANT4_Q3_1(k_packed_q3_1)
+            case GGML_TYPE_Q2_0S: FA_DEQUANT4_Q2_0S(k_packed_q2_0s)
+            case GGML_TYPE_Q2_1: FA_DEQUANT4_Q2_1(k_packed_q2_1)
         }
     } else {
         switch (FaTypeV) {
@@ -209,6 +263,12 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
             case GGML_TYPE_TURBO2_0: FA_DEQUANT4_TURBO2_0(v_packed_turbo2_0)
             case GGML_TYPE_TURBO3_0: FA_DEQUANT4_TURBO3_0(v_packed_turbo3_0)
             case GGML_TYPE_TURBO4_0: FA_DEQUANT4_TURBO4_0(v_packed_turbo4_0)
+            case GGML_TYPE_Q6_0: FA_DEQUANT4_Q6_0(v_packed_q6_0)
+            case GGML_TYPE_Q6_1: FA_DEQUANT4_Q6_1(v_packed_q6_1)
+            case GGML_TYPE_Q3_0: FA_DEQUANT4_Q3_0(v_packed_q3_0)
+            case GGML_TYPE_Q3_1: FA_DEQUANT4_Q3_1(v_packed_q3_1)
+            case GGML_TYPE_Q2_0S: FA_DEQUANT4_Q2_0S(v_packed_q2_0s)
+            case GGML_TYPE_Q2_1: FA_DEQUANT4_Q2_1(v_packed_q2_1)
         }
     }
     return FLOAT_TYPEV4(0);

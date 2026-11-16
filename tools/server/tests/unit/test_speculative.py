@@ -152,6 +152,32 @@ def test_synth_ignores_target_tokens():
     assert res.body["stop_type"] == "limit"
 
 
+def test_draft_n_ubatch_smaller_than_target():
+    global server
+    request = {
+        "prompt": "I believe the meaning of life is",
+        "temperature": 0.0,
+        "top_k": 1,
+        "n_predict": 16,
+    }
+
+    # draft with the default ubatch size of the draft context
+    server.start()
+    res_default = server.make_request("POST", "/completion", data=request)
+    server.stop()
+    assert res_default.status_code == 200
+    assert res_default.body["timings"]["draft_n"] > 0
+
+    # a smaller draft ubatch splits the draft batches into more ubatches, but must not change the result
+    server.spec_draft_n_ubatch = 8
+    server.start()
+    res_small = server.make_request("POST", "/completion", data=request)
+    server.stop()
+    assert res_small.status_code == 200
+    assert res_small.body["timings"]["draft_n"] > 0
+    assert res_small.body["tokens"] == res_default.body["tokens"]
+
+
 def test_slot_ctx_not_exceeded():
     global server
     server.n_ctx = 256
@@ -203,3 +229,82 @@ def test_multi_requests_parallel(n_slots: int, n_requests: int):
     for res in results:
         assert res.status_code == 200
         assert match_regex("(wise|kind|owl|answer)+", res.body["content"])
+
+
+@pytest.mark.parametrize("n_batch,n_ubatch", [
+    (8, 8),
+    (12, 8),
+])
+def test_parallel_verification_spans_are_atomic(n_batch: int, n_ubatch: int, monkeypatch):
+    global server
+    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_P_MIN", "0")
+    server.n_slots = 3
+    server.n_batch = n_batch
+    server.n_ubatch = n_ubatch
+    server.spec_draft_n_min = 1
+    server.spec_draft_n_max = 5
+    server.spec_synth_rates = [0.0] * server.spec_draft_n_max
+    server.start()
+
+    n_predict = 8
+    request = {
+        "prompt": "I believe the meaning of life is",
+        "temperature": 0.0,
+        "top_k": 1,
+        "n_predict": n_predict,
+        "ignore_eos": True,
+        "return_tokens": True,
+    }
+    tasks = [(server.make_request, ("POST", "/completion", request)) for _ in range(server.n_slots)]
+    results = parallel_function_calls(tasks)
+
+    for res in results:
+        assert res.status_code == 200
+
+    expected_content = results[0].body["content"]
+    expected_tokens = results[0].body["tokens"]
+    assert len(expected_tokens) == n_predict
+    for res in results:
+        assert res.body["content"] == expected_content
+        assert res.body["tokens"] == expected_tokens
+        assert res.body["tokens_predicted"] == n_predict
+        assert res.body["stop_type"] == "limit"
+        assert res.body["timings"]["predicted_n"] == n_predict
+        assert res.body["timings"]["draft_n"] == 20
+        assert res.body["timings"]["draft_n_accepted"] == 0
+
+
+def test_draft_token_probs():
+    # tokens accepted from the draft must carry the target model's probabilities,
+    # same as without speculative decoding (#24271)
+    global server
+    request = {
+        "prompt": "I believe the meaning of life is",
+        "temperature": 0.0,
+        "top_k": 1,
+        "n_predict": 16,
+        "n_probs": 4,
+    }
+
+    server.model_draft = None  # disable draft model
+    server.spec_type = None
+    server.start()
+    res = server.make_request("POST", "/completion", data=request)
+    assert res.status_code == 200
+    probs_no_draft = res.body["completion_probabilities"]
+    server.stop()
+
+    create_server()
+    server.start()
+    res = server.make_request("POST", "/completion", data=request)
+    assert res.status_code == 200
+    assert res.body["timings"]["draft_n"] > 0
+    probs_draft = res.body["completion_probabilities"]
+
+    assert len(probs_draft) == len(probs_no_draft)
+    for tok_draft, tok_no_draft in zip(probs_draft, probs_no_draft):
+        assert tok_draft["id"] == tok_no_draft["id"]
+        assert len(tok_draft["top_logprobs"]) == len(tok_no_draft["top_logprobs"])
+        assert abs(tok_draft["logprob"] - tok_no_draft["logprob"]) < 0.25
+    # real logprobs are not all exactly 0.0 (prob 1.0)
+    assert any(tok["logprob"] < -1e-4 for tok in probs_draft)

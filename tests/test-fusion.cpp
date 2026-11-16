@@ -32,6 +32,7 @@
 #include <iostream>
 #include <map>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -110,6 +111,24 @@ static std::string get_arch(const std::string & path) {
     }
     const char * val = gguf_get_val_str(ctx.get(), idx);
     return val ? val : "unknown";
+}
+
+// the baselines are recorded on the unquantized dummy models
+static bool is_quantized(const std::string & path) {
+    gguf_init_params params = { /*no_alloc=*/true, /*ctx=*/nullptr };
+    gguf_context_ptr ctx(gguf_init_from_file(path.c_str(), params));
+    if (!ctx.get()) {
+        throw std::runtime_error("failed to read gguf: " + path);
+    }
+    const int idx = gguf_find_key(ctx.get(), "general.file_type");
+    if (idx < 0) {
+        return false;
+    }
+    if (gguf_get_kv_type(ctx.get(), idx) != GGUF_TYPE_UINT32) {
+        throw std::runtime_error("invalid general.file_type type: " + path);
+    }
+    const uint32_t ftype = gguf_get_val_u32(ctx.get(), idx);
+    return ftype != LLAMA_FTYPE_ALL_F32 && ftype != LLAMA_FTYPE_MOSTLY_F16 && ftype != LLAMA_FTYPE_MOSTLY_BF16;
 }
 
 static llama_model_ptr load_model(const std::string & path, ggml_backend_dev_t dev) {
@@ -191,6 +210,14 @@ static void read_counts(fusion_stats_get_t api_stats_get, ggml_backend_fusion_t 
     api_stats_get(finfo, labels.data(), counts.data(), n);
 }
 
+struct baseline_row {
+    std::string arch;
+    bool        moe;
+    std::string mode;
+    std::string label;
+    uint64_t    count;
+};
+
 // one row of the per-label report
 struct fusion_row {
     std::string  arch;
@@ -210,7 +237,7 @@ static void usage(const char * argv0) {
     printf("%s: verify fusion counts on a device against a per-device baseline\n\n", argv0);
     printf("usage: %s [options]\n\n", argv0);
     printf("options:\n");
-    printf("  --models DIR   run over all .gguf models in a directory\n");
+    printf("  --models DIR   run over all unquantized .gguf models in a directory\n");
     printf("  --model FILE   run over a single model file (mutually exclusive with --models)\n");
     printf("  --device NAME  device to run on (e.g. MTL0, CPU)\n");
     printf("  --record CSV   write the golden baseline\n");
@@ -279,7 +306,7 @@ int main(int argc, char ** argv) {
             return 1;
         }
         for (const auto & entry : std::filesystem::directory_iterator(models_dir)) {
-            if (entry.is_regular_file() && entry.path().extension() == ".gguf") {
+            if (entry.is_regular_file() && entry.path().extension() == ".gguf" && !is_quantized(entry.path().string())) {
                 models.push_back(entry.path().string());
             }
         }
@@ -329,8 +356,8 @@ int main(int argc, char ** argv) {
 
     const bool has_counts = true;
 
-    // load the baseline (if any): key arch|moe|mode|label -> expected count
-    std::map<std::string, uint64_t> baseline;
+    // load the baseline (if any): key arch|moe|mode|label -> expected row
+    std::map<std::string, baseline_row> baseline;
     if (!check_path.empty()) {
         std::ifstream in(check_path);
         if (!in) {
@@ -352,11 +379,15 @@ int main(int argc, char ** argv) {
             if (cols.size() != 5) {
                 continue;
             }
-            baseline[cols[0] + "|" + cols[1] + "|" + cols[2] + "|" + cols[3]] = std::stoull(cols[4]);
+            const std::string key = cols[0] + "|" + cols[1] + "|" + cols[2] + "|" + cols[3];
+            baseline[key] = { cols[0], cols[1] == "1", cols[2], cols[3], std::stoull(cols[4]) };
         }
     }
 
     std::vector<fusion_row> rows;
+
+    std::set<std::string> run_arches;
+    std::set<std::string> produced;
 
     LOG_INF("%s: running fusion test over %zu models on '%s'\n", __func__, models.size(), base_name.c_str());
 
@@ -377,6 +408,8 @@ int main(int argc, char ** argv) {
             LOG_ERR("%s: %s: %s\n", __func__, model_path.c_str(), e.what());
             continue;
         }
+
+        run_arches.insert(arch);
 
         struct mode_cfg {
             std::string name;
@@ -480,7 +513,8 @@ int main(int argc, char ** argv) {
                 if (match) {
                     // one "any" row; use the worst NMSE across the two modes
                     const std::string any_key = arch + "|" + (moe ? "1" : "0") + "|any|" + label;
-                    const uint64_t expected = baseline.count(any_key) ? baseline.at(any_key) : 0;
+                    produced.insert(any_key);
+                    const uint64_t expected = baseline.count(any_key) ? baseline.at(any_key).count : 0;
                     const bool ok_count = check_path.empty() || d[0].count_fused == expected;
                     const bool ok_nmse   = d[0].ok_nmse && d[1].ok_nmse;
                     const double nmse_fus = std::max(d[0].nmse_fus, d[1].nmse_fus);
@@ -495,7 +529,8 @@ int main(int argc, char ** argv) {
                         }
                         const mode_data & a = d[mi];
                         const std::string mode_key = arch + "|" + (moe ? "1" : "0") + "|" + modes[mi].name + "|" + label;
-                        const uint64_t expected = baseline.count(mode_key) ? baseline.at(mode_key) : 0;
+                        produced.insert(mode_key);
+                        const uint64_t expected = baseline.count(mode_key) ? baseline.at(mode_key).count : 0;
                         const bool ok_count = check_path.empty() || a.count_fused == expected;
                         rows.push_back({ arch, moe, modes[mi].name, label, a.count_fused, a.count_unfused,
                                          expected, a.nmse_fus, a.nmse_dev, ok_count, a.ok_nmse });
@@ -505,6 +540,18 @@ int main(int argc, char ** argv) {
         }
 
         LOG_INF("%s: %-20s (%s) done\n", __func__, arch.c_str(), model_path.c_str());
+    }
+
+    if (!check_path.empty()) {
+        for (const auto & kv : baseline) {
+            if (produced.count(kv.first) || !run_arches.count(kv.second.arch)) {
+                continue;
+            }
+            const baseline_row & b = kv.second;
+            LOG_WRN("%s: %s: fusion %s x%llu is no longer matched\n", __func__, b.arch.c_str(),
+                    b.label.c_str(), (unsigned long long) b.count);
+            rows.push_back({ b.arch, b.moe, b.mode, b.label, 0, 0, b.count, 0.0, 0.0, false, true });
+        }
     }
 
     // print the report

@@ -93,7 +93,8 @@ enum ggml_status ggml_tallocr_alloc(struct ggml_tallocr * talloc, struct ggml_te
 
 // dynamic tensor allocator
 
-#define GGML_VBUFFER_MAX_CHUNKS 16
+#define GGML_VBUFFER_INITIAL_CHUNKS 16
+#define GGML_VBUFFER_MAX_CHUNKS 64
 
 // relative memory address within an allocation that can be split into multiple buffers (chunks)
 struct buffer_address {
@@ -121,8 +122,9 @@ struct tallocr_chunk {
 struct ggml_dyn_tallocr {
     size_t alignment;
     size_t max_chunk_size;
-    struct tallocr_chunk * chunks[GGML_VBUFFER_MAX_CHUNKS];
+    struct tallocr_chunk ** chunks; // [cap_chunks], grown on demand
     int n_chunks;
+    int cap_chunks;
 
 #ifdef GGML_ALLOCATOR_DEBUG
     struct {
@@ -158,20 +160,23 @@ static void ggml_dyn_tallocr_remove_block(struct tallocr_chunk * chunk, int idx)
 }
 
 static int ggml_dyn_tallocr_new_chunk(struct ggml_dyn_tallocr * alloc, size_t min_size) {
-    if (alloc->n_chunks >= GGML_VBUFFER_MAX_CHUNKS) {
-        return -1;
+    // The chunk list grows as needed. It used to be a fixed array of 16 whose last chunk was unbounded, so a
+    // compute buffer of more than ~16 chunks (16 GiB with Vulkan's 1 GiB chunks) packed everything left into
+    // one oversized chunk that the backend then refused (past RADV's 4 GiB buffer limit, issue 22).
+    if (alloc->n_chunks == alloc->cap_chunks) {
+        const int cap = alloc->cap_chunks ? 2*alloc->cap_chunks : GGML_VBUFFER_INITIAL_CHUNKS;
+        struct tallocr_chunk ** chunks = (struct tallocr_chunk **) realloc(alloc->chunks, cap*sizeof(*chunks));
+        if (chunks == NULL) {
+            return -1;
+        }
+        alloc->chunks = chunks;
+        alloc->cap_chunks = cap;
     }
     struct tallocr_chunk * chunk = calloc(1, sizeof(struct tallocr_chunk));
     chunk->n_free_blocks = 1;
     chunk->free_blocks[0].offset = 0;
-    // available space in a chunk is limited to max_chunk_size, but can be higher if:
-    // 1. a single tensor exceeds the maximum, and cannot fit any other way
-    // 2. we are running out of chunks
-    // backends will either manage to allocate the larger size, or report an error.
+    // available space in a chunk is limited to max_chunk_size, unless a single tensor exceeds it
     chunk->free_blocks[0].size = MAX(min_size, alloc->max_chunk_size);
-    if (alloc->n_chunks == GGML_VBUFFER_MAX_CHUNKS - 1) {
-        chunk->free_blocks[0].size = SIZE_MAX/2;
-    }
     alloc->chunks[alloc->n_chunks] = chunk;
     alloc->n_chunks++;
     return alloc->n_chunks - 1;
@@ -252,7 +257,7 @@ static struct buffer_address ggml_dyn_tallocr_alloc(struct ggml_dyn_tallocr * al
         best_fit_block = 0;
     }
     if (best_fit_chunk == -1) {
-        // since the last chunk always has virtually endless memory, this should never happen
+        // only reached if the chunk list itself cannot grow
         GGML_LOG_ERROR("%s: not enough space in the buffer to allocate %zu bytes, largest block available %zu bytes\n",
             __func__, size, max_avail);
         GGML_ABORT("graph allocation: failed to reserve memory");
@@ -350,7 +355,7 @@ static void ggml_dyn_tallocr_free_bytes(struct ggml_dyn_tallocr * alloc, struct 
 }
 
 static void ggml_dyn_tallocr_reset(struct ggml_dyn_tallocr * alloc) {
-    for (int i = 0; i < GGML_VBUFFER_MAX_CHUNKS; i++) {
+    for (int i = 0; i < alloc->n_chunks; i++) {
         free(alloc->chunks[i]);
         alloc->chunks[i] = NULL;
     }
@@ -369,8 +374,9 @@ static struct ggml_dyn_tallocr * ggml_dyn_tallocr_new(size_t alignment, size_t m
     *alloc = (struct ggml_dyn_tallocr) {
         /*.alignment      = */ alignment,
         /*.max_chunk_size = */ MIN(max_buffer_size, SIZE_MAX/2), // clamp to avoid overflows
-        /*.chunks         = */ {NULL},
+        /*.chunks         = */ NULL,
         /*.n_chunks       = */ 0,
+        /*.cap_chunks     = */ 0,
 #ifdef GGML_ALLOCATOR_DEBUG
         /*.allocated_tensors = */ {{0}},
 #endif
@@ -385,6 +391,7 @@ static void ggml_dyn_tallocr_free(struct ggml_dyn_tallocr * alloc) {
     for (int i = 0; i < alloc->n_chunks; ++i) {
         free(alloc->chunks[i]);
     }
+    free(alloc->chunks);
     free(alloc);
 }
 
@@ -396,26 +403,45 @@ static size_t ggml_dyn_tallocr_max_size(struct ggml_dyn_tallocr * alloc, int chu
 // virtual buffer with contiguous memory range, split into multiple backend buffers (chunks)
 
 struct vbuffer {
-    ggml_backend_buffer_t chunks[GGML_VBUFFER_MAX_CHUNKS];
+    ggml_backend_buffer_t * chunks; // [n_chunks]
+    int n_chunks;
 };
 
 static void ggml_vbuffer_free(struct vbuffer * buf) {
     if (buf == NULL) {
         return;
     }
-    for (int i = 0; i < GGML_VBUFFER_MAX_CHUNKS; ++i) {
+    for (int i = 0; i < buf->n_chunks; ++i) {
         ggml_backend_buffer_free(buf->chunks[i]);
     }
+    free(buf->chunks);
     free(buf);
 }
 
+// make room for n chunks (new slots are empty)
+static bool ggml_vbuffer_reserve_chunks(struct vbuffer * buf, int n) {
+    if (n <= buf->n_chunks) {
+        return true;
+    }
+    ggml_backend_buffer_t * chunks = (ggml_backend_buffer_t *) realloc(buf->chunks, n*sizeof(*chunks));
+    if (chunks == NULL) {
+        return false;
+    }
+    for (int i = buf->n_chunks; i < n; ++i) {
+        chunks[i] = NULL;
+    }
+    buf->chunks = chunks;
+    buf->n_chunks = n;
+    return true;
+}
+
 static size_t ggml_vbuffer_chunk_size(struct vbuffer * buf, int chunk) {
-    return buf->chunks[chunk] ? ggml_backend_buffer_get_size(buf->chunks[chunk]) : 0;
+    return chunk < buf->n_chunks && buf->chunks[chunk] ? ggml_backend_buffer_get_size(buf->chunks[chunk]) : 0;
 }
 
 static size_t ggml_vbuffer_size(struct vbuffer * buf) {
     size_t size = 0;
-    for (int i = 0; i < GGML_VBUFFER_MAX_CHUNKS && buf->chunks[i]; ++i) {
+    for (int i = 0; i < buf->n_chunks && buf->chunks[i]; ++i) {
         size += ggml_backend_buffer_get_size(buf->chunks[i]);
     }
     return size;
@@ -426,10 +452,34 @@ static struct vbuffer * ggml_vbuffer_alloc(ggml_backend_buffer_type_t buft, cons
     if (buf == NULL) {
         return NULL;
     }
+    if (!ggml_vbuffer_reserve_chunks(buf, talloc->n_chunks)) {
+        free(buf);
+        return NULL;
+    }
 
     for (int n = 0; n < talloc->n_chunks; n++) {
         size_t chunk_size = talloc->chunks[n]->max_size;
         buf->chunks[n] = ggml_backend_buft_alloc_buffer(buft, chunk_size);
+        if (buf->chunks[n] == NULL) {
+            ggml_vbuffer_free(buf);
+            return NULL;
+        }
+        ggml_backend_buffer_set_usage(buf->chunks[n], usage);
+    }
+    return buf;
+}
+
+static struct vbuffer * ggml_vbuffer_alloc_sizes(
+        ggml_backend_buffer_type_t buft,
+        const size_t sizes[GGML_VBUFFER_MAX_CHUNKS],
+        enum ggml_backend_buffer_usage usage) {
+    struct vbuffer * buf = (struct vbuffer *) calloc(1, sizeof(struct vbuffer));
+    if (buf == NULL) {
+        return NULL;
+    }
+
+    for (int n = 0; n < GGML_VBUFFER_MAX_CHUNKS && sizes[n] > 0; ++n) {
+        buf->chunks[n] = ggml_backend_buft_alloc_buffer(buft, sizes[n]);
         if (buf->chunks[n] == NULL) {
             ggml_vbuffer_free(buf);
             return NULL;
@@ -446,7 +496,7 @@ static void ggml_vbuffer_tensor_alloc(struct vbuffer * buf, struct ggml_tensor *
 }
 
 static void ggml_vbuffer_reset(struct vbuffer * buf) {
-    for (int i = 0; i < GGML_VBUFFER_MAX_CHUNKS && buf->chunks[i]; ++i) {
+    for (int i = 0; i < buf->n_chunks && buf->chunks[i]; ++i) {
         ggml_backend_buffer_reset(buf->chunks[i]);
     }
 }
@@ -493,7 +543,231 @@ struct ggml_gallocr {
 
     struct leaf_alloc * leaf_allocs; // [n_leafs]
     int n_leafs;
+
+    bool resizable;
+    bool shrink_requested;
+    uint64_t generation;
+
+    struct ggml_gallocr_shared_buffers * shared_buffers;
+    int shared_role;
+    int * shared_entry_ids; // [n_buffers], -1 for private buffers
 };
+
+enum ggml_gallocr_shared_role {
+    GGML_GALLOCR_SHARED_ROLE_OWNER    = 0,
+    GGML_GALLOCR_SHARED_ROLE_BORROWER = 1,
+    GGML_GALLOCR_SHARED_ROLE_COUNT    = 2,
+};
+
+struct ggml_gallocr_shared_entry {
+    ggml_backend_buffer_type_t buft;
+    struct vbuffer * buffer;
+    size_t requirements[GGML_GALLOCR_SHARED_ROLE_COUNT][GGML_VBUFFER_MAX_CHUNKS];
+};
+
+struct ggml_gallocr_shared_buffers {
+    struct ggml_gallocr_shared_entry * entries;
+    int n_entries;
+    int refs;
+
+    bool active[GGML_GALLOCR_SHARED_ROLE_COUNT];
+    bool shrink_seen[GGML_GALLOCR_SHARED_ROLE_COUNT];
+    bool shrink_pending;
+
+    uint64_t generation;
+    uint64_t shrink_generation;
+};
+
+static bool ggml_gallocr_resize_buffer(
+        ggml_gallocr_t galloc,
+        int buffer_id,
+        bool shrink) {
+    size_t required[GGML_VBUFFER_MAX_CHUNKS] = {0};
+    for (int chunk = 0; chunk < galloc->buf_tallocs[buffer_id]->n_chunks; ++chunk) {
+        required[chunk] = ggml_dyn_tallocr_max_size(galloc->buf_tallocs[buffer_id], chunk);
+    }
+
+    bool changed = false;
+    bool needs_growth = false;
+    for (int chunk = 0; chunk < GGML_VBUFFER_MAX_CHUNKS; ++chunk) {
+        const size_t allocated = galloc->buffers[buffer_id] ?
+                ggml_vbuffer_chunk_size(galloc->buffers[buffer_id], chunk) : 0;
+        changed = changed || allocated != required[chunk];
+        needs_growth = needs_growth || allocated < required[chunk];
+    }
+
+    if (!changed || (!needs_growth && !shrink)) {
+        return true;
+    }
+
+    struct vbuffer * old = galloc->buffers[buffer_id];
+    for (int i = 0; i < galloc->n_buffers; ++i) {
+        if (galloc->buf_tallocs[i] == galloc->buf_tallocs[buffer_id]) {
+            galloc->buffers[i] = NULL;
+        }
+    }
+    ggml_vbuffer_free(old);
+    galloc->generation++;
+
+    struct vbuffer * replacement = NULL;
+    if (required[0] > 0) {
+        replacement = ggml_vbuffer_alloc_sizes(galloc->bufts[buffer_id], required, GGML_BACKEND_BUFFER_USAGE_COMPUTE);
+        if (replacement == NULL) {
+            GGML_LOG_ERROR("%s: failed to allocate resizable %s workspace of size %.2f MiB\n",
+                    __func__, ggml_backend_buft_name(galloc->bufts[buffer_id]), required[0] / 1024.0 / 1024.0);
+            return false;
+        }
+    }
+
+    for (int i = 0; i < galloc->n_buffers; ++i) {
+        if (galloc->buf_tallocs[i] == galloc->buf_tallocs[buffer_id]) {
+            galloc->buffers[i] = replacement;
+        }
+    }
+
+    return true;
+}
+
+static bool ggml_gallocr_resize_private_buffers(ggml_gallocr_t galloc) {
+    for (int i = 0; i < galloc->n_buffers; ++i) {
+        if (galloc->shared_buffers != NULL && galloc->shared_entry_ids[i] >= 0) {
+            continue;
+        }
+
+        bool duplicate = false;
+        for (int j = 0; j < i; ++j) {
+            if (galloc->buf_tallocs[j] == galloc->buf_tallocs[i]) {
+                galloc->buffers[i] = galloc->buffers[j];
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) {
+            continue;
+        }
+        if (!ggml_gallocr_resize_buffer(galloc, i, galloc->shrink_requested)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool ggml_gallocr_resize_shared_entry(
+        struct ggml_gallocr_shared_buffers * shared,
+        struct ggml_gallocr_shared_entry * entry,
+        bool shrink) {
+    size_t required[GGML_VBUFFER_MAX_CHUNKS] = {0};
+    for (int role = 0; role < GGML_GALLOCR_SHARED_ROLE_COUNT; ++role) {
+        if (!shared->active[role]) {
+            continue;
+        }
+        for (int chunk = 0; chunk < GGML_VBUFFER_MAX_CHUNKS; ++chunk) {
+            required[chunk] = MAX(required[chunk], entry->requirements[role][chunk]);
+        }
+    }
+
+    bool changed = false;
+    bool needs_growth = false;
+    for (int chunk = 0; chunk < GGML_VBUFFER_MAX_CHUNKS; ++chunk) {
+        const size_t allocated = entry->buffer ? ggml_vbuffer_chunk_size(entry->buffer, chunk) : 0;
+        changed = changed || allocated != required[chunk];
+        needs_growth = needs_growth || allocated < required[chunk];
+    }
+
+    if (!changed || (!needs_growth && !shrink)) {
+        return true;
+    }
+
+    ggml_vbuffer_free(entry->buffer);
+    entry->buffer = NULL;
+    shared->generation++;
+
+    // Keep the published requirements after failure. Any role can retry the same shared maximum.
+    if (required[0] > 0) {
+        entry->buffer = ggml_vbuffer_alloc_sizes(entry->buft, required, GGML_BACKEND_BUFFER_USAGE_COMPUTE);
+        if (entry->buffer == NULL) {
+            GGML_LOG_ERROR("%s: failed to allocate shared %s workspace of size %.2f MiB\n",
+                    __func__, ggml_backend_buft_name(entry->buft), required[0] / 1024.0 / 1024.0);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool ggml_gallocr_publish_shared_requirements(ggml_gallocr_t galloc) {
+    struct ggml_gallocr_shared_buffers * shared = galloc->shared_buffers;
+    GGML_ASSERT(shared != NULL);
+
+    for (int i = 0; i < galloc->n_buffers; ++i) {
+        const int entry_id = galloc->shared_entry_ids[i];
+        if (entry_id < 0) {
+            continue;
+        }
+
+        bool duplicate = false;
+        for (int j = 0; j < i; ++j) {
+            if (galloc->shared_entry_ids[j] == entry_id) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) {
+            continue;
+        }
+
+        size_t * requirements = shared->entries[entry_id].requirements[galloc->shared_role];
+        memset(requirements, 0, GGML_VBUFFER_MAX_CHUNKS * sizeof(*requirements));
+        for (int chunk = 0; chunk < galloc->buf_tallocs[i]->n_chunks; ++chunk) {
+            requirements[chunk] = ggml_dyn_tallocr_max_size(galloc->buf_tallocs[i], chunk);
+        }
+    }
+
+    bool shrink = false;
+    if (shared->shrink_pending) {
+        shared->shrink_seen[galloc->shared_role] = true;
+        shrink = true;
+        for (int role = 0; role < GGML_GALLOCR_SHARED_ROLE_COUNT; ++role) {
+            if (shared->active[role] && !shared->shrink_seen[role]) {
+                shrink = false;
+                break;
+            }
+        }
+    }
+
+    for (int i = 0; i < shared->n_entries; ++i) {
+        if (!ggml_gallocr_resize_shared_entry(shared, &shared->entries[i], shrink)) {
+            return false;
+        }
+    }
+
+    if (shrink) {
+        shared->shrink_pending = false;
+        memset(shared->shrink_seen, 0, sizeof(shared->shrink_seen));
+    }
+    return true;
+}
+
+static bool ggml_gallocr_resize_buffers(ggml_gallocr_t galloc) {
+    if (galloc->shared_buffers != NULL && !ggml_gallocr_publish_shared_requirements(galloc)) {
+        return false;
+    }
+    if (!ggml_gallocr_resize_private_buffers(galloc)) {
+        return false;
+    }
+    galloc->shrink_requested = false;
+    return true;
+}
+
+static struct vbuffer * ggml_gallocr_get_vbuffer(ggml_gallocr_t galloc, int buffer_id) {
+    if (galloc->shared_buffers != NULL) {
+        const int entry_id = galloc->shared_entry_ids[buffer_id];
+        if (entry_id >= 0) {
+            return galloc->shared_buffers->entries[entry_id].buffer;
+        }
+    }
+    return galloc->buffers[buffer_id];
+}
 
 ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs) {
     ggml_gallocr_t galloc = (ggml_gallocr_t)calloc(1, sizeof(struct ggml_gallocr));
@@ -535,10 +809,50 @@ ggml_gallocr_t ggml_gallocr_new(ggml_backend_buffer_type_t buft) {
     return ggml_gallocr_new_n(&buft, 1);
 }
 
+static void ggml_gallocr_shared_start_shrink(struct ggml_gallocr_shared_buffers * shared) {
+    shared->shrink_pending = true;
+    memset(shared->shrink_seen, 0, sizeof(shared->shrink_seen));
+    shared->shrink_generation++;
+}
+
+static void ggml_gallocr_shared_free(struct ggml_gallocr_shared_buffers * shared) {
+    for (int i = 0; i < shared->n_entries; ++i) {
+        ggml_vbuffer_free(shared->entries[i].buffer);
+    }
+    free(shared->entries);
+    free(shared);
+}
+
+static void ggml_gallocr_detach_shared_buffers(ggml_gallocr_t galloc) {
+    struct ggml_gallocr_shared_buffers * shared = galloc->shared_buffers;
+    if (shared == NULL) {
+        return;
+    }
+
+    const int role = galloc->shared_role;
+    GGML_ASSERT(role >= 0 && role < GGML_GALLOCR_SHARED_ROLE_COUNT);
+    GGML_ASSERT(shared->active[role]);
+    shared->active[role] = false;
+    shared->shrink_seen[role] = false;
+    for (int i = 0; i < shared->n_entries; ++i) {
+        memset(shared->entries[i].requirements[role], 0, sizeof(shared->entries[i].requirements[role]));
+    }
+
+    shared->refs--;
+    if (shared->refs == 0) {
+        ggml_gallocr_shared_free(shared);
+    } else {
+        ggml_gallocr_shared_start_shrink(shared);
+    }
+    galloc->shared_buffers = NULL;
+}
+
 void ggml_gallocr_free(ggml_gallocr_t galloc) {
     if (galloc == NULL) {
         return;
     }
+
+    ggml_gallocr_detach_shared_buffers(galloc);
 
     for (int i = 0; i < galloc->n_buffers; i++) {
         if (galloc->buffers != NULL) {
@@ -576,7 +890,124 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
     free(galloc->buf_tallocs);
     free(galloc->node_allocs);
     free(galloc->leaf_allocs);
+    free(galloc->shared_entry_ids);
     free(galloc);
+}
+
+static void ggml_gallocr_set_resizable_owner(ggml_gallocr_t galloc) {
+    GGML_ASSERT(galloc != NULL);
+    GGML_ASSERT(!galloc->resizable);
+
+    for (int i = 0; i < galloc->n_buffers; ++i) {
+        GGML_ASSERT(galloc->buffers[i] == NULL);
+    }
+
+    struct ggml_gallocr_shared_buffers * shared =
+            (struct ggml_gallocr_shared_buffers *) calloc(1, sizeof(*shared));
+    GGML_ASSERT(shared != NULL);
+    shared->entries = (struct ggml_gallocr_shared_entry *) calloc(
+            (size_t) galloc->n_buffers, sizeof(*shared->entries));
+    GGML_ASSERT(shared->entries != NULL);
+
+    galloc->shared_entry_ids = (int *) malloc((size_t) galloc->n_buffers * sizeof(int));
+    GGML_ASSERT(galloc->shared_entry_ids != NULL);
+    for (int i = 0; i < galloc->n_buffers; ++i) {
+        int entry_id = -1;
+        for (int j = 0; j < shared->n_entries; ++j) {
+            if (shared->entries[j].buft == galloc->bufts[i]) {
+                entry_id = j;
+                break;
+            }
+        }
+        if (entry_id < 0) {
+            entry_id = shared->n_entries++;
+            shared->entries[entry_id].buft = galloc->bufts[i];
+        }
+        galloc->shared_entry_ids[i] = entry_id;
+    }
+
+    shared->refs = 1;
+    shared->active[GGML_GALLOCR_SHARED_ROLE_OWNER] = true;
+
+    galloc->resizable = true;
+    galloc->shared_buffers = shared;
+    galloc->shared_role = GGML_GALLOCR_SHARED_ROLE_OWNER;
+}
+
+static bool ggml_gallocr_set_resizable_borrower(ggml_gallocr_t galloc, ggml_gallocr_t owner) {
+    GGML_ASSERT(galloc != NULL);
+    GGML_ASSERT(owner != NULL);
+    GGML_ASSERT(galloc != owner);
+    GGML_ASSERT(!galloc->resizable);
+
+    struct ggml_gallocr_shared_buffers * shared = owner->shared_buffers;
+    if (shared == NULL || owner->shared_role != GGML_GALLOCR_SHARED_ROLE_OWNER ||
+            shared->active[GGML_GALLOCR_SHARED_ROLE_BORROWER]) {
+        return false;
+    }
+
+    for (int i = 0; i < galloc->n_buffers; ++i) {
+        GGML_ASSERT(galloc->buffers[i] == NULL);
+    }
+
+    int * entry_ids = (int *) malloc((size_t) galloc->n_buffers * sizeof(int));
+    GGML_ASSERT(entry_ids != NULL);
+    bool compatible = false;
+    for (int i = 0; i < galloc->n_buffers; ++i) {
+        entry_ids[i] = -1;
+        for (int j = 0; j < shared->n_entries; ++j) {
+            if (shared->entries[j].buft == galloc->bufts[i]) {
+                entry_ids[i] = j;
+                compatible = true;
+                break;
+            }
+        }
+    }
+
+    if (!compatible) {
+        free(entry_ids);
+        return false;
+    }
+
+    shared->refs++;
+    shared->active[GGML_GALLOCR_SHARED_ROLE_BORROWER] = true;
+    shared->shrink_seen[GGML_GALLOCR_SHARED_ROLE_BORROWER] = false;
+
+    galloc->resizable = true;
+    galloc->shared_buffers = shared;
+    galloc->shared_role = GGML_GALLOCR_SHARED_ROLE_BORROWER;
+    galloc->shared_entry_ids = entry_ids;
+    return true;
+}
+
+bool ggml_gallocr_set_resizable(ggml_gallocr_t galloc, ggml_gallocr_t owner) {
+    GGML_ASSERT(galloc != NULL);
+    if (owner != NULL) {
+        return ggml_gallocr_set_resizable_borrower(galloc, owner);
+    }
+    ggml_gallocr_set_resizable_owner(galloc);
+    return true;
+}
+
+void ggml_gallocr_get_resizable_state(
+        ggml_gallocr_t galloc,
+        uint64_t * generation,
+        uint64_t * shrink_generation) {
+    GGML_ASSERT(galloc != NULL);
+    GGML_ASSERT(generation != NULL);
+    GGML_ASSERT(shrink_generation != NULL);
+    *generation = galloc->generation +
+            (galloc->shared_buffers ? galloc->shared_buffers->generation : 0);
+    *shrink_generation = galloc->shared_buffers ? galloc->shared_buffers->shrink_generation : 0;
+}
+
+void ggml_gallocr_request_shrink(ggml_gallocr_t galloc) {
+    GGML_ASSERT(galloc != NULL);
+    GGML_ASSERT(galloc->resizable);
+    galloc->shrink_requested = true;
+    if (galloc->shared_buffers != NULL && !galloc->shared_buffers->shrink_pending) {
+        ggml_gallocr_shared_start_shrink(galloc->shared_buffers);
+    }
 }
 
 typedef struct ggml_gallocr * ggml_gallocr_t;
@@ -823,7 +1254,10 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
 }
 
 static bool ggml_gallocr_reserve_n_impl(
-        ggml_gallocr_t galloc, struct ggml_cgraph * graph, const int * node_buffer_ids, const int * leaf_buffer_ids, bool no_alloc) {
+        ggml_gallocr_t galloc, struct ggml_cgraph * graph, const int * node_buffer_ids, const int * leaf_buffer_ids, bool no_alloc, bool reuse_only) {
+    if (reuse_only && galloc->resizable) {
+        return false;
+    }
     size_t min_hash_size = graph->n_nodes + graph->n_leafs;
     // add 25% margin to avoid hash collisions
     min_hash_size += min_hash_size / 4;
@@ -901,7 +1335,25 @@ static bool ggml_gallocr_reserve_n_impl(
         }
     }
 
-    // reallocate buffers if needed
+    if (reuse_only) {
+        for (int i = 0; i < galloc->n_buffers; ++i) {
+            if (!galloc->buffers[i]) {
+                return false;
+            }
+            for (int c = 0; c < galloc->buf_tallocs[i]->n_chunks; ++c) {
+                if (ggml_dyn_tallocr_max_size(galloc->buf_tallocs[i], c) > ggml_vbuffer_chunk_size(galloc->buffers[i], c)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    if (galloc->resizable && !no_alloc) {
+        return ggml_gallocr_resize_buffers(galloc);
+    }
+
+    // reallocate private buffers if needed
     for (int i = 0; i < galloc->n_buffers; i++) {
         // if the buffer type is used multiple times, we reuse the same buffer
         for (int j = 0; j < i; j++) {
@@ -950,7 +1402,7 @@ static bool ggml_gallocr_reserve_n_impl(
 
 void ggml_gallocr_reserve_n_size(
         ggml_gallocr_t galloc, struct ggml_cgraph * graph, const int * node_buffer_ids, const int * leaf_buffer_ids, size_t * sizes) {
-    GGML_ASSERT(ggml_gallocr_reserve_n_impl(galloc, graph, node_buffer_ids, leaf_buffer_ids, /*no_alloc =*/ true));
+    GGML_ASSERT(ggml_gallocr_reserve_n_impl(galloc, graph, node_buffer_ids, leaf_buffer_ids, /*no_alloc =*/ true, /*reuse_only =*/ false));
     for (int i = 0; i < galloc->n_buffers; i++) {
         sizes[i] = 0;
         for (int c = 0; c < galloc->buf_tallocs[i]->n_chunks; c++) {
@@ -960,7 +1412,11 @@ void ggml_gallocr_reserve_n_size(
 }
 
 bool ggml_gallocr_reserve_n(ggml_gallocr_t galloc, struct ggml_cgraph * graph, const int * node_buffer_ids, const int * leaf_buffer_ids) {
-    return ggml_gallocr_reserve_n_impl(galloc, graph, node_buffer_ids, leaf_buffer_ids, /*no_alloc =*/ false);
+    return ggml_gallocr_reserve_n_impl(galloc, graph, node_buffer_ids, leaf_buffer_ids, /*no_alloc =*/ false, /*reuse_only =*/ false);
+}
+
+bool ggml_gallocr_reserve_n_if_fits(ggml_gallocr_t galloc, struct ggml_cgraph * graph, const int * node_buffer_ids, const int * leaf_buffer_ids) {
+    return ggml_gallocr_reserve_n_impl(galloc, graph, node_buffer_ids, leaf_buffer_ids, /*no_alloc =*/ true, /*reuse_only =*/ true);
 }
 
 bool ggml_gallocr_reserve(ggml_gallocr_t galloc, struct ggml_cgraph *graph) {
@@ -984,7 +1440,9 @@ static void ggml_gallocr_init_tensor(ggml_gallocr_t galloc, struct ggml_tensor *
         if (tensor->data == NULL) {
             assert(tensor_alloc->addr.offset != SIZE_MAX);
             assert(ggml_backend_buft_get_alloc_size(galloc->bufts[buffer_id], tensor) <= tensor_alloc->size_max);
-            ggml_vbuffer_tensor_alloc(galloc->buffers[buffer_id], tensor, tensor_alloc->addr);
+            struct vbuffer * buffer = ggml_gallocr_get_vbuffer(galloc, buffer_id);
+            GGML_ASSERT(buffer != NULL);
+            ggml_vbuffer_tensor_alloc(buffer, tensor, tensor_alloc->addr);
         } else {
             if (tensor->buffer == NULL) {
                 // this tensor was allocated without ggml-backend
@@ -1068,8 +1526,23 @@ bool ggml_gallocr_alloc_graph(ggml_gallocr_t galloc, struct ggml_cgraph * graph)
 
     // reset buffers
     for (int i = 0; i < galloc->n_buffers; i++) {
-        if (galloc->buffers[i] != NULL) {
-            ggml_vbuffer_reset(galloc->buffers[i]);
+        struct vbuffer * buffer = ggml_gallocr_get_vbuffer(galloc, i);
+        if (buffer != NULL) {
+            if (!galloc->resizable) {
+                ggml_vbuffer_reset(buffer);
+                continue;
+            }
+
+            bool already_reset = false;
+            for (int j = 0; j < i; ++j) {
+                if (ggml_gallocr_get_vbuffer(galloc, j) == buffer) {
+                    already_reset = true;
+                    break;
+                }
+            }
+            if (!already_reset) {
+                ggml_vbuffer_reset(buffer);
+            }
         }
     }
 
@@ -1100,19 +1573,20 @@ bool ggml_gallocr_alloc_graph(ggml_gallocr_t galloc, struct ggml_cgraph * graph)
 size_t ggml_gallocr_get_buffer_size(ggml_gallocr_t galloc, int buffer_id) {
     GGML_ASSERT(buffer_id >= 0 && buffer_id < galloc->n_buffers);
 
-    if (galloc->buffers[buffer_id] == NULL) {
+    struct vbuffer * buffer = ggml_gallocr_get_vbuffer(galloc, buffer_id);
+    if (buffer == NULL) {
         return 0;
     }
 
     for (int i = 0; i < buffer_id; i++) {
-        if (galloc->buffers[i] == galloc->buffers[buffer_id]) {
+        if (ggml_gallocr_get_vbuffer(galloc, i) == buffer) {
             // this buffer is the same as a previous one due to the same buffer type being used multiple times
             // only return the buffer size the first time it appears to avoid double counting
             return 0;
         }
     }
 
-    return ggml_vbuffer_size(galloc->buffers[buffer_id]);
+    return ggml_vbuffer_size(buffer);
 }
 
 // utils

@@ -15,6 +15,7 @@ class llama_kv_cache_iswa : public llama_memory_i {
 public:
     llama_kv_cache_iswa(
             const llama_model & model,
+                         bool   no_alloc,
                     ggml_type   type_k,
                     ggml_type   type_v,
                          bool   v_trans,
@@ -24,15 +25,19 @@ public:
                      uint32_t   kv_size,
                      uint32_t   n_seq_max,
                      uint32_t   n_ubatch,
-                     uint32_t   n_pad,
                llama_memory_t   mem_other,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse,
-        const  layer_share_cb & share);
+        const  layer_share_cb & share,
+        llama_memory_placement_options placement,
+                          size_t kv_stream_stage_bytes = 0,
+                          void * kv_stream_phase_arena = nullptr,
+                          size_t kv_stream_maximum_pool_bytes = 0);
 
     llama_kv_cache_iswa(
             const llama_model & model,
-            const llama_hparams & hparams,
+                         bool   no_alloc,
+          const llama_hparams & hparams,
                     ggml_type   type_k,
                     ggml_type   type_v,
                          bool   v_trans,
@@ -42,11 +47,14 @@ public:
                      uint32_t   kv_size,
                      uint32_t   n_seq_max,
                      uint32_t   n_ubatch,
-                     uint32_t   n_pad,
                llama_memory_t   mem_other,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse,
-        const  layer_share_cb & share);
+        const  layer_share_cb & share,
+        llama_memory_placement_options placement,
+                          size_t kv_stream_stage_bytes = 0,
+                          void * kv_stream_phase_arena = nullptr,
+                          size_t kv_stream_maximum_pool_bytes = 0);
 
     ~llama_kv_cache_iswa() = default;
 
@@ -61,9 +69,15 @@ public:
 
     llama_memory_context_ptr init_full() override;
 
+    llama_memory_context_ptr init_reserve(uint32_t n_kv) override;
+
+    uint32_t get_attn_reserve_capacity() const override;
+
     llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) override;
 
     bool get_can_shift() const override;
+    bool can_decode_sampled() const override;
+    void seq_set_last_token(llama_seq_id seq_id, llama_pos pos, llama_token token) override;
 
     void clear(bool data) override;
 
@@ -82,6 +96,9 @@ public:
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
+
+    bool has_kv_stream_targets() const override;
+    std::vector<llama_kv_stream_target> get_kv_stream_targets() const override;
 
     //
     // llama_kv_cache_iswa specific API
@@ -109,6 +126,10 @@ public:
     llama_kv_cache_iswa_context(
             llama_kv_cache_iswa * kv);
 
+    llama_kv_cache_iswa_context(
+            llama_kv_cache_iswa * kv,
+            uint32_t n_kv);
+
     // used to create an update context
     llama_kv_cache_iswa_context(
             llama_kv_cache_iswa * kv,
@@ -133,6 +154,10 @@ public:
 
     llama_memory_status  get_status() const override;
     const llama_ubatch & get_ubatch() const override;
+    uint32_t get_attn_reserve_n_kv() const override;
+
+    bool has_kv_stream_targets() const override;
+    std::vector<llama_kv_stream_active_target> get_kv_stream_active_targets() const override;
 
     //
     // llama_kv_cache_iswa_context specific API

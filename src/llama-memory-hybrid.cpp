@@ -10,14 +10,16 @@
 
 llama_memory_hybrid::llama_memory_hybrid(
         const llama_model & model,
+                     bool   no_alloc,
                             /* attn */
                 ggml_type   type_k,
                 ggml_type   type_v,
                      bool   v_trans,
                  uint32_t   kv_size,
-                 uint32_t   n_pad,
                  uint32_t   n_swa,
            llama_swa_type   swa_type,
+                     bool   offload_attn,
+ llama_memory_placement_options placement,
                             /* recurrent */
                 ggml_type   type_r,
                 ggml_type   type_s,
@@ -25,23 +27,25 @@ llama_memory_hybrid::llama_memory_hybrid(
                             /* common */
                  uint32_t   n_seq_max,
                  uint32_t   n_rs_seq,
-                     bool   offload,
                      bool   unified,
                             /* layer filters */
     const layer_filter_cb & filter_attn,
-    const layer_filter_cb & filter_recr) :
+    const layer_filter_cb & filter_recr,
+                     size_t kv_stream_stage_bytes,
+                     void * kv_stream_phase_arena,
+                     size_t kv_stream_maximum_pool_bytes) :
     hparams(model.hparams),
     mem_attn(new llama_kv_cache(
         model,
+        no_alloc,
         model.hparams,
         type_k,
         type_v,
         v_trans,
-        offload,
+        offload_attn,
         unified,
         kv_size,
         n_seq_max,
-        n_pad,
         n_swa,
         swa_type,
         nullptr,
@@ -49,13 +53,19 @@ llama_memory_hybrid::llama_memory_hybrid(
             [&](int32_t il) { return !hparams.is_recr(il); }
             : filter_attn,
         nullptr,
-        nullptr
+        nullptr,
+        placement,
+        "",
+        kv_stream_stage_bytes,
+        kv_stream_phase_arena,
+        kv_stream_maximum_pool_bytes
     )),
     mem_recr(new llama_memory_recurrent(
         model,
+        no_alloc,
         type_r,
         type_s,
-        offload,
+        placement.recurrent_offload,
         rs_size,
         n_seq_max,
         n_rs_seq,
@@ -126,6 +136,14 @@ llama_memory_context_ptr llama_memory_hybrid::init_full() {
     return std::make_unique<llama_memory_hybrid_context>(this);
 }
 
+llama_memory_context_ptr llama_memory_hybrid::init_reserve(uint32_t n_kv) {
+    return std::make_unique<llama_memory_hybrid_context>(this, mem_attn->init_reserve(n_kv));
+}
+
+uint32_t llama_memory_hybrid::get_attn_reserve_capacity() const {
+    return mem_attn->get_attn_reserve_capacity();
+}
+
 llama_memory_context_ptr llama_memory_hybrid::init_update(llama_context * lctx, bool optimize) {
     return std::make_unique<llama_memory_hybrid_context>(this, lctx, optimize);
 }
@@ -135,9 +153,26 @@ bool llama_memory_hybrid::get_can_shift() const {
     return mem_attn->get_can_shift();
 }
 
+bool llama_memory_hybrid::recurrent_sparse_snapshots_supported() const {
+    return mem_recr->recurrent_sparse_snapshots_supported();
+}
+
+bool llama_memory_hybrid::recurrent_set_sparse_snapshot_mode(bool enabled, int32_t selected_token) {
+    return mem_recr->recurrent_set_sparse_snapshot_mode(enabled, selected_token);
+}
+
 void llama_memory_hybrid::clear(bool data) {
     mem_attn->clear(data);
     mem_recr->clear(data);
+}
+
+bool llama_memory_hybrid::can_decode_sampled() const {
+    return mem_attn->can_decode_sampled() && mem_recr->can_decode_sampled();
+}
+
+void llama_memory_hybrid::seq_set_last_token(llama_seq_id seq_id, llama_pos pos, llama_token token) {
+    mem_attn->seq_set_last_token(seq_id, pos, token);
+    mem_recr->seq_set_last_token(seq_id, pos, token);
 }
 
 bool llama_memory_hybrid::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
@@ -187,27 +222,27 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_hybrid::memory_breakdo
     return mb;
 }
 
+bool llama_memory_hybrid::has_kv_stream_targets() const {
+    return mem_attn->has_kv_stream_targets();
+}
+
+std::vector<llama_kv_stream_target> llama_memory_hybrid::get_kv_stream_targets() const {
+    return mem_attn->get_kv_stream_targets();
+}
+
 void llama_memory_hybrid::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
-    if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0) {
-        mem_attn->state_write(io, seq_id, flags);
-    }
+    mem_attn->state_write(io, seq_id, flags);
     mem_recr->state_write(io, seq_id, flags);
 }
 
 void llama_memory_hybrid::state_read(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) {
-    const bool read_attn = (flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0;
-
-    if (read_attn) {
-        mem_attn->state_read(io, seq_id, flags);
-    }
+    mem_attn->state_read(io, seq_id, flags);
 
     try {
         mem_recr->state_read(io, seq_id, flags);
     } catch (...) {
-        // the attention part is already restored - undo it
-        if (read_attn) {
-            mem_attn->state_clear(seq_id);
-        }
+        // a failed restore leaves the sequence empty in both caches
+        mem_attn->state_clear(seq_id);
 
         throw;
     }
@@ -227,6 +262,14 @@ llama_memory_hybrid_context::llama_memory_hybrid_context(llama_memory_hybrid * m
     ctx_attn(mem->get_mem_attn()->init_full()),
     ctx_recr(mem->get_mem_recr()->init_full()),
     status(llama_memory_status_combine(ctx_attn->get_status(), ctx_recr->get_status())) {
+}
+
+llama_memory_hybrid_context::llama_memory_hybrid_context(
+              llama_memory_hybrid * mem,
+        llama_memory_context_ptr   ctx_attn) :
+    ctx_attn(std::move(ctx_attn)),
+    ctx_recr(mem->get_mem_recr()->init_full()),
+    status(llama_memory_status_combine(this->ctx_attn->get_status(), ctx_recr->get_status())) {
 }
 
 llama_memory_hybrid_context::llama_memory_hybrid_context(
@@ -282,6 +325,10 @@ const llama_ubatch & llama_memory_hybrid_context::get_ubatch() const {
     return ubatches[i_next];
 }
 
+uint32_t llama_memory_hybrid_context::get_attn_reserve_n_kv() const {
+    return ctx_attn->get_attn_reserve_n_kv();
+}
+
 const llama_kv_cache_context * llama_memory_hybrid_context::get_attn() const {
     return static_cast<const llama_kv_cache_context *>(ctx_attn.get());
 }
@@ -296,6 +343,14 @@ ggml_tensor * llama_memory_hybrid_context::get_turbo_rot_inverse() const {
 
 ggml_tensor * llama_memory_hybrid_context::get_turbo_innerq_scale_inv() const {
     return ctx_attn ? ctx_attn->get_turbo_innerq_scale_inv() : nullptr;
+}
+
+bool llama_memory_hybrid_context::has_kv_stream_targets() const {
+    return ctx_attn ? ctx_attn->has_kv_stream_targets() : false;
+}
+
+std::vector<llama_kv_stream_active_target> llama_memory_hybrid_context::get_kv_stream_active_targets() const {
+    return ctx_attn ? ctx_attn->get_kv_stream_active_targets() : std::vector<llama_kv_stream_active_target>{};
 }
 
 const llama_memory_recurrent_context * llama_memory_hybrid_context::get_recr() const {

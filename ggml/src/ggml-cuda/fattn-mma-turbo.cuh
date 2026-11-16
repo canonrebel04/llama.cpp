@@ -50,12 +50,24 @@ void ggml_cuda_flash_attn_ext_mma_turbo_case(ggml_backend_cuda_context & ctx, gg
 
     const size_t nbytes_shared_KV = nbytes_shared_KV_1stage;
 
+    // q4_0/q8_0: packed raw-row staging buffer placed after the (16-byte padded) mask tile.
+    constexpr bool   is_q_kv            = type_K == GGML_TYPE_Q4_0 || type_K == GGML_TYPE_Q8_0;
+    const size_t     nbytes_shared_mask_p = is_q_kv ? GGML_PAD(nbytes_shared_mask, 16) : nbytes_shared_mask;
+    const size_t     nbytes_shared_stage  = is_q_kv ?
+        16 + (size_t) nbatch_fa * std::max(fattn_q_row_bytes<type_K, DKQ>(), fattn_q_row_bytes<type_V, DV>()) : 0;
+
     const size_t nbytes_shared_total = std::max(nbytes_shared_combine, Q_in_reg ?
-        std::max(nbytes_shared_Q,  nbytes_shared_KV + nbytes_shared_mask) :
-                 nbytes_shared_Q + nbytes_shared_KV + nbytes_shared_mask);
+        std::max(nbytes_shared_Q,  nbytes_shared_KV + nbytes_shared_mask_p + nbytes_shared_stage) :
+                 nbytes_shared_Q + nbytes_shared_KV + nbytes_shared_mask_p + nbytes_shared_stage);
 
     float logit_softcap;
     memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
+
+#ifdef GGML_CUDA_COMPACT_CAUSAL_MASK
+    const bool compact_causal_prefix = KQV->src[3] && KQV->src[3]->type == GGML_TYPE_I64;
+#else
+    constexpr bool compact_causal_prefix = false;
+#endif
 
 #if defined(GGML_USE_HIP)
     using fattn_kernel_ptr_t = const void*;
@@ -65,24 +77,24 @@ void ggml_cuda_flash_attn_ext_mma_turbo_case(ggml_backend_cuda_context & ctx, gg
     fattn_kernel_t fattn_kernel;
     if (logit_softcap == 0.0f) {
         constexpr bool use_logit_softcap = false;
-        fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, /*use_sparse=*/false, type_K, type_V>;
+        fattn_kernel = get_fattn_mma_f16_kernel<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, /*use_sparse=*/false, type_K, type_V>(compact_causal_prefix);
 
 #if !defined(GGML_USE_MUSA)
-        static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
-        if (!shared_memory_limit_raised[id]) {
+        static bool shared_memory_limit_raised[2][GGML_CUDA_MAX_DEVICES] = {{false}};
+        if (!shared_memory_limit_raised[compact_causal_prefix][id]) {
             CUDA_CHECK(cudaFuncSetAttribute(reinterpret_cast<fattn_kernel_ptr_t>(fattn_kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, nbytes_shared_total));
-            shared_memory_limit_raised[id] = true;
+            shared_memory_limit_raised[compact_causal_prefix][id] = true;
         }
 #endif // !defined(GGML_USE_MUSA)
     } else {
         constexpr bool use_logit_softcap = true;
-        fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, /*use_sparse=*/false, type_K, type_V>;
+        fattn_kernel = get_fattn_mma_f16_kernel<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, /*use_sparse=*/false, type_K, type_V>(compact_causal_prefix);
 
 #if !defined(GGML_USE_MUSA)
-        static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
-        if (!shared_memory_limit_raised[id]) {
+        static bool shared_memory_limit_raised[2][GGML_CUDA_MAX_DEVICES] = {{false}};
+        if (!shared_memory_limit_raised[compact_causal_prefix][id]) {
             CUDA_CHECK(cudaFuncSetAttribute(reinterpret_cast<fattn_kernel_ptr_t>(fattn_kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, nbytes_shared_total));
-            shared_memory_limit_raised[id] = true;
+            shared_memory_limit_raised[compact_causal_prefix][id] = true;
         }
 #endif // !defined(GGML_USE_MUSA)
     }

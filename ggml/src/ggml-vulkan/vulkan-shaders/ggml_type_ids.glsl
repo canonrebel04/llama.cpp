@@ -35,5 +35,11 @@
 #define GGML_TYPE_TQ3_1S  45u
 #define GGML_TYPE_TQ4_1S  46u
 #define GGML_TYPE_TURBO4_0 47u
+#define GGML_TYPE_Q6_0 52u
+#define GGML_TYPE_Q6_1 53u
+#define GGML_TYPE_Q3_0 54u
+#define GGML_TYPE_Q3_1 55u
+#define GGML_TYPE_Q2_0S 56u
+#define GGML_TYPE_Q2_1 57u
 
 #endif // !defined(GGML_TYPE_IDS_COMP)

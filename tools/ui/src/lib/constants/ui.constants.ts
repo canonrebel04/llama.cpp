@@ -1,8 +1,53 @@
 import { MODEL_ICON } from './icons.constants';
+import {
+	SHORTCUT_MODELS,
+	SHORTCUT_NEW_CHAT,
+	SHORTCUT_SEARCH,
+	SHORTCUT_SETTINGS
+} from './keyboard-shortcuts.constants';
+import { MODELS_ROUTE_ID } from './routes.constants';
 import { Search, Settings, SquarePen } from '@lucide/svelte';
 import McpLogo from '$lib/components/app/mcp/McpLogo.svelte';
 import { SidebarAction, ToolSource } from '$lib/enums';
 import type { DesktopIconStripItem } from '$lib/types';
+
+/** Delay before a copied affordance resets from its check to the copy icon. */
+export const COPY_FEEDBACK_RESET_MS = 1500;
+
+/** How long a collapsible block's body takes to expand or collapse. */
+export const COLLAPSIBLE_TRANSITION_MS = 200;
+
+/**
+ * Parts of a message where right-click keeps the browser's own menu (open or
+ * copy a link, save an image, copy code or a field), not the message actions.
+ */
+export const NATIVE_CONTEXT_MENU_SELECTOR =
+	'a, img, video, audio, pre, code, input, textarea, [contenteditable="true"]';
+
+/**
+ * A sidebar section under a dragged chat, or one being moved: the faint tint
+ * of the sidebar's resize handle, edged like the handle while it is dragged.
+ */
+export const SIDEBAR_DRAG_HIGHLIGHT_CLASS = 'bg-foreground/6 ring-1 ring-foreground/15 ring-inset';
+
+/** How long a sidebar chat row takes to slide out of a section, or into one. */
+export const SIDEBAR_ROW_SLIDE_MS = 200;
+
+/** Chats a sidebar section shows before its "Show more" row. */
+export const SIDEBAR_SECTION_PREVIEW_COUNT = 6;
+
+/**
+ * The "Show less" row of an opened section stays at the bottom of the sidebar
+ * while the section scrolls under it, with room below it and a fade above
+ * (see app.css). "Show more" is a plain row.
+ */
+export const SIDEBAR_SHOW_MORE_ROW_CLASS = 'sidebar-show-more sticky bottom-0 z-10 pb-2';
+
+/** Ids of the sidebar's conversation sections, for their folded state. */
+export const SIDEBAR_SECTION_IDS = {
+	PINNED: 'pinned',
+	RECENT: 'recent'
+} as const;
 
 export const FORK_TREE_DEPTH_PADDING = 8;
 export const SYSTEM_MESSAGE_PLACEHOLDER = 'System message';
@@ -64,6 +109,20 @@ export const RECENT_MODEL_LIMIT = 20;
 export const ICON_STRIP_TRANSITION_DURATION = 150;
 export const ICON_STRIP_TRANSITION_DELAY_MULTIPLIER = 50;
 
+/** Collapsed desktop sidebar strip width, matching its `md:w-12`. */
+export const SIDEBAR_COLLAPSED_WIDTH = '3rem';
+/** Bounds the expanded desktop sidebar can be dragged between. */
+export const SIDEBAR_MIN_WIDTH = '18rem';
+export const SIDEBAR_MAX_WIDTH = '32rem';
+/** Dragging the sidebar edge narrower than this snaps it to the pointer; letting go hides it. */
+export const SIDEBAR_COLLAPSE_WIDTH = '9rem';
+/** How far past its min or max width a drag can stretch the sidebar before it resists fully. */
+export const SIDEBAR_OVERSTRETCH_PX = 80;
+/** Spring-back duration when a drag ends outside the width bounds. */
+export const SIDEBAR_SETTLE_MS = 300;
+/** Duration of the sidebar's open and close slide, matching its `duration-200` transition. */
+export const SIDEBAR_TOGGLE_MS = 200;
+
 /** Max height for tool-result code blocks (json / source / diff / streaming code). */
 export const MAX_HEIGHT_CODE_BLOCK = '22rem';
 
@@ -71,13 +130,15 @@ export const SIDEBAR_ACTIONS_ITEMS: DesktopIconStripItem[] = [
 	{
 		action: SidebarAction.NEW_CHAT,
 		icon: SquarePen,
-		keys: ['shift', 'cmd', 'o'],
+		keys: SHORTCUT_NEW_CHAT,
 		tooltip: 'New chat'
 	},
-	{ icon: Search, keys: ['cmd', 'k'], tooltip: 'Search' },
+	{ action: SidebarAction.SEARCH, icon: Search, keys: SHORTCUT_SEARCH, tooltip: 'Search' },
 	{
 		action: SidebarAction.MANAGE_MODELS,
+		activeRouteId: MODELS_ROUTE_ID,
 		icon: MODEL_ICON,
+		keys: SHORTCUT_MODELS,
 		tooltip: 'Models'
 	},
 	{
@@ -88,6 +149,7 @@ export const SIDEBAR_ACTIONS_ITEMS: DesktopIconStripItem[] = [
 	{
 		action: SidebarAction.SETTINGS,
 		icon: Settings,
+		keys: SHORTCUT_SETTINGS,
 		tooltip: 'Settings'
 	}
 ];

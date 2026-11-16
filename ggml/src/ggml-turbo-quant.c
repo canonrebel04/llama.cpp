@@ -755,6 +755,104 @@ static int tq4_0_choose_index(float val) {
     return 15;
 }
 
+/* ---------- TQ3_4S (ported from turbo-tan/llama.cpp-tq3) ----------
+ * 4 x E3M5 scales (3-bit exponent, bias 9, 5-bit mantissa) per 32-block,
+ * one per group of 8 rotated values, plus 3-bit centroid indices. */
+
+static inline float tq3_4s_decode_scale(uint8_t byte) {
+    if (byte == 0) return 0.0f;
+    return ldexpf(1.0f + (float)(byte & 31) / 32.0f, (byte >> 5) - 9);
+}
+
+static inline uint8_t tq3_4s_encode_scale(float val) {
+    if (val <= 0.0f) return 0;
+    int exp = (int)floorf(log2f(val)) + 9;
+    if (exp < 0) exp = 0;
+    if (exp > 7) exp = 7;
+    const float mantissa = val / ldexpf(1.0f, exp - 9) - 1.0f;
+    int m = (int)roundf(mantissa * 32.0f);
+    if (m < 0) m = 0;
+    if (m > 31) m = 31;
+    return (uint8_t)((exp << 5) | m);
+}
+
+static void tq3_4s_quantize_block(const float * GGML_RESTRICT bx, const float * GGML_RESTRICT bw, block_tq3_4s * GGML_RESTRICT y) {
+    float rotated[TQ_BLOCK_SIZE];
+    memcpy(rotated, bx, sizeof(rotated));
+    tq3_0_rht_forward(rotated);
+    uint8_t all_idx[TQ_BLOCK_SIZE];
+    for (int g = 0; g < 4; ++g) {
+        float sum_sq = 0.0f;
+        for (int j = 0; j < 8; ++j) sum_sq += rotated[g*8+j] * rotated[g*8+j];
+        float scale = fmaxf(sqrtf(sum_sq / 8.0f), 1e-10f);
+        for (int iter = 0; iter < 4; ++iter) {
+            const float inv = 1.0f / fmaxf(scale, 1e-10f);
+            float numer = 0.0f, denom = 0.0f;
+            for (int j = 0; j < 8; ++j) {
+                const int idx = tq3_0_choose_index(rotated[g*8+j] * inv);
+                all_idx[g*8+j] = (uint8_t) idx;
+                const float c = TQ3_0_CENTROIDS[idx];
+                const float w = bw ? bw[g*8+j] : 1.0f;
+                numer += w * rotated[g*8+j] * c;
+                denom += w * c * c;
+            }
+            if (denom > 1e-12f) scale = fmaxf(numer / denom, 1e-10f);
+        }
+        y->d[g] = tq3_4s_encode_scale(scale);
+        const uint8_t * idx = all_idx + g * 8;
+        uint8_t * qp = y->qs + g * 3;
+        qp[0] = (idx[0]) | (idx[1] << 3) | (idx[2] << 6);
+        qp[1] = (idx[2] >> 2) | (idx[3] << 1) | (idx[4] << 4) | (idx[5] << 7);
+        qp[2] = (idx[5] >> 1) | (idx[6] << 2) | (idx[7] << 5);
+    }
+}
+
+void quantize_row_tq3_4s_ref(const float * GGML_RESTRICT x, block_tq3_4s * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ3_0 == 0);
+    const int64_t nb = k / QK_TQ3_0;
+    for (int64_t i = 0; i < nb; ++i) {
+        tq3_4s_quantize_block(x + i * QK_TQ3_0, NULL, &y[i]);
+    }
+}
+
+void dequantize_row_tq3_4s(const block_tq3_4s * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ3_0 == 0);
+    const int64_t nb = k / QK_TQ3_0;
+    for (int64_t i = 0; i < nb; ++i) {
+        float * buf = y + i * QK_TQ3_0;
+        for (int g = 0; g < 4; ++g) {
+            const float d = tq3_4s_decode_scale(x[i].d[g]);
+            const uint8_t * qp = x[i].qs + g * 3;
+            uint8_t idx[8];
+            idx[0] =  qp[0]       & 7;
+            idx[1] = (qp[0] >> 3) & 7;
+            idx[2] = ((qp[0] >> 6) | (qp[1] << 2)) & 7;
+            idx[3] = (qp[1] >> 1) & 7;
+            idx[4] = (qp[1] >> 4) & 7;
+            idx[5] = ((qp[1] >> 7) | (qp[2] << 1)) & 7;
+            idx[6] = (qp[2] >> 2) & 7;
+            idx[7] = (qp[2] >> 5) & 7;
+            for (int j = 0; j < 8; ++j) buf[g*8 + j] = TQ3_0_CENTROIDS[idx[j]] * d;
+        }
+        tq3_0_rht_inverse(buf);
+    }
+}
+
+size_t quantize_tq3_4s(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+                       int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    assert(n_per_row % QK_TQ3_0 == 0);
+    const size_t row_size = ggml_row_size(GGML_TYPE_TQ3_4S, n_per_row);
+    const int64_t nb = n_per_row / QK_TQ3_0;
+    block_tq3_4s * y = (block_tq3_4s *) dst;
+    for (int64_t row = 0; row < nrow; ++row) {
+        for (int64_t i = 0; i < nb; ++i) {
+            const float * bw = quant_weights ? quant_weights + i * QK_TQ3_0 : NULL;
+            tq3_4s_quantize_block(src + row * n_per_row + i * QK_TQ3_0, bw, &y[row * nb + i]);
+        }
+    }
+    return nrow * row_size;
+}
+
 /* ---------- TQ3_1S quantization ---------- */
 
 void quantize_row_tq3_1s_ref(const float * GGML_RESTRICT x, block_tq3_1s * GGML_RESTRICT y, int64_t k) {

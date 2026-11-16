@@ -18,6 +18,7 @@
 #include <numeric>
 #include <random>
 #include <unordered_map>
+#include <unordered_set>
 #include <stdexcept>
 
 // the ring buffer works similarly to std::deque, but with a fixed capacity
@@ -2857,6 +2858,15 @@ struct llama_sampler * llama_sampler_init_grammar_lazy_patterns(
     return llama_sampler_init_grammar_impl(vocab, grammar_str, grammar_root, /* lazy= */ true, nullptr, 0, trigger_tokens, num_trigger_tokens, trigger_patterns, num_trigger_patterns);
 }
 
+bool llama_sampler_grammar_is_active(const struct llama_sampler * smpl) {
+    if (!smpl || smpl->iface != &llama_sampler_grammar_i) {
+        return true;
+    }
+
+    const auto * ctx = (const llama_sampler_grammar *) smpl->ctx;
+    return !ctx->grammar || !ctx->grammar->awaiting_trigger;
+}
+
 // penalties
 
 struct llama_sampler_penalties : public llama_sampler_backend {
@@ -2870,6 +2880,7 @@ struct llama_sampler_penalties : public llama_sampler_backend {
 
     // a frequency map to count token occurrences
     std::unordered_map<llama_token, int> token_count;
+    std::vector<int32_t> token_count_dense;
 
     // backend graph inputs
     ggml_tensor * inp_token_ids = nullptr;
@@ -2886,6 +2897,7 @@ struct llama_sampler_penalties : public llama_sampler_backend {
         // note: inp_token_ids/inp_counts belong to the current sampling graph
         prev        = src.prev;
         token_count = src.token_count;
+        token_count_dense = src.token_count_dense;
     }
 
     static bool is_disabled(
@@ -2913,7 +2925,8 @@ struct llama_sampler_penalties : public llama_sampler_backend {
         , penalty_repeat  (penalty_repeat)
         , penalty_freq    (penalty_freq)
         , penalty_present (penalty_present)
-        , prev            (penalty_last_n) {
+        , prev            (penalty_last_n)
+        , token_count_dense(std::max(n_vocab, 0), 0) {
     }
 };
 
@@ -2928,14 +2941,20 @@ static void llama_sampler_penalties_accept(struct llama_sampler * smpl, llama_to
         return;
     }
 
-    ctx->token_count[token]++;
+    const int count = ++ctx->token_count[token];
+    if (token >= 0 && token < ctx->n_vocab) {
+        ctx->token_count_dense[token] = count;
+    }
 
     // if the ring buffer is full, remove the oldest token
     if (ctx->prev.size() >= (size_t) ctx->penalty_last_n) {
         const auto old = ctx->prev.front();
 
-        ctx->token_count[old]--;
-        if (ctx->token_count[old] == 0) {
+        const int old_count = --ctx->token_count[old];
+        if (old >= 0 && old < ctx->n_vocab) {
+            ctx->token_count_dense[old] = old_count;
+        }
+        if (old_count == 0) {
             ctx->token_count.erase(old);
         }
     }
@@ -2962,12 +2981,17 @@ static void llama_sampler_penalties_apply(struct llama_sampler * smpl, llama_tok
 
     // Apply frequency and presence penalties to the cur_p
     for (size_t i = 0; i < cur_p->size; ++i) {
-        const auto token_iter = ctx->token_count.find(cur_p->data[i].id);
-        if (token_iter == ctx->token_count.end()) {
+        const llama_token token = cur_p->data[i].id;
+        int count = 0;
+        if (token >= 0 && token < ctx->n_vocab) {
+            count = ctx->token_count_dense[token];
+        } else {
+            const auto token_iter = ctx->token_count.find(token);
+            count = token_iter == ctx->token_count.end() ? 0 : token_iter->second;
+        }
+        if (count == 0) {
             continue;
         }
-
-        const int count = token_iter->second;
 
         assert(count > 0 && count <= ctx->penalty_last_n);
 
@@ -2989,6 +3013,7 @@ static void llama_sampler_penalties_reset(struct llama_sampler * smpl) {
     auto * ctx = (llama_sampler_penalties *) smpl->ctx;
     ctx->prev.clear();
     ctx->token_count.clear();
+    std::fill(ctx->token_count_dense.begin(), ctx->token_count_dense.end(), 0);
 }
 
 static struct llama_sampler * llama_sampler_penalties_clone(const struct llama_sampler * smpl) {
@@ -3006,6 +3031,7 @@ static struct llama_sampler * llama_sampler_penalties_clone(const struct llama_s
 
         result_ctx->prev        = ctx->prev;
         result_ctx->token_count = ctx->token_count;
+        result_ctx->token_count_dense = ctx->token_count_dense;
     }
 
     return result;
@@ -3333,9 +3359,13 @@ struct llama_sampler_dry {
 };
 
 // Ported from Koboldcpp, original PR: https://github.com/LostRuins/koboldcpp/pull/982 (Original author: pi6am)
-static void get_overlapping_token_sequences(const llama_vocab & vocab, const std::string& str, std::unordered_multimap<llama_token, std::vector<llama_token>>& token_sequences, int max_tail_len = -1) {
-    for (llama_token token_id = 0; token_id < (llama_token) vocab.n_tokens(); token_id++) {
-        std::string word = vocab.detokenize({token_id}, true);
+static void get_overlapping_token_sequences(const llama_vocab & vocab, const std::vector<std::string> & vocab_words, const std::string& str, std::unordered_multimap<llama_token, std::vector<llama_token>>& token_sequences, int max_tail_len = -1) {
+    // the tail tokenization only depends on how many characters of str were matched, so compute each one at most once
+    std::vector<std::vector<llama_token>> tail_cache(str.size() + 1);
+    std::vector<bool> tail_cached(str.size() + 1, false);
+
+    for (llama_token token_id = 0; token_id < (llama_token) vocab_words.size(); token_id++) {
+        const std::string & word = vocab_words[token_id];
         if (word.find(str) != std::string::npos) {
             token_sequences.emplace(token_id, std::vector<llama_token>());
         } else {
@@ -3352,10 +3382,14 @@ static void get_overlapping_token_sequences(const llama_vocab & vocab, const std
                     }
                 }
                 if (match) {
-                    std::vector<llama_token> tokenization = vocab.tokenize(str.substr(i), false, false);
-                    if (max_tail_len >= 0 && tokenization.size() > (size_t)max_tail_len) {
-                        tokenization.resize(max_tail_len);
+                    if (!tail_cached[i]) {
+                        tail_cache[i] = vocab.tokenize(str.substr(i), false, false);
+                        if (max_tail_len >= 0 && tail_cache[i].size() > (size_t)max_tail_len) {
+                            tail_cache[i].resize(max_tail_len);
+                        }
+                        tail_cached[i] = true;
                     }
+                    const std::vector<llama_token> & tokenization = tail_cache[i];
 
                     // Ensure we don't already have a duplicate matching tokenization
                     auto its = token_sequences.equal_range(token_id);
@@ -3656,6 +3690,16 @@ struct llama_sampler * llama_sampler_init_dry(const struct llama_vocab * vocab, 
 
     if (dry_enabled && seq_breakers != nullptr && num_breakers > 0) {
         // Process sequence breakers
+        // each distinct breaker costs a full vocabulary scan: drop duplicates and stop at the cap
+        std::unordered_set<std::string> seen_breakers;
+
+        // detokenize the vocabulary once instead of rescanning it for every breaker
+        std::vector<std::string> vocab_words;
+        vocab_words.reserve(vocab->n_tokens());
+        for (llama_token token_id = 0; token_id < (llama_token) vocab->n_tokens(); ++token_id) {
+            vocab_words.push_back(vocab->detokenize({token_id}, true));
+        }
+
         for (size_t i = 0; i < num_breakers; ++i) {
             if (seq_breakers[i] == nullptr || std::strlen(seq_breakers[i]) == 0) {
                 LLAMA_LOG_WARN("skipping null or empty DRY sequence breaker at index %zu\n", i);
@@ -3663,17 +3707,22 @@ struct llama_sampler * llama_sampler_init_dry(const struct llama_vocab * vocab, 
             }
 
             std::string sequence_break(seq_breakers[i]);
-            if (sequence_break.empty()) {
-                LLAMA_LOG_WARN("skipping empty DRY sequence breaker\n");
-                continue;
-            }
-
             if (sequence_break.size() > MAX_CHAR_LEN) {
                 LLAMA_LOG_WARN("truncating DRY sequence breaker to %d characters\n", MAX_CHAR_LEN);
                 sequence_break.resize(MAX_CHAR_LEN);
             }
 
-            get_overlapping_token_sequences(*vocab, sequence_break, processed_breakers, MAX_SEQ_LEN);
+            if (!seen_breakers.insert(sequence_break).second) {
+                continue;
+            }
+
+            if (seen_breakers.size() > LLAMA_DRY_MAX_SEQ_BREAKERS) {
+                LLAMA_LOG_WARN("ignoring DRY sequence breaker at index %zu: more than %d distinct breakers\n",
+                        i, LLAMA_DRY_MAX_SEQ_BREAKERS);
+                break;
+            }
+
+            get_overlapping_token_sequences(*vocab, vocab_words, sequence_break, processed_breakers, MAX_SEQ_LEN);
         }
     }
 
@@ -3893,6 +3942,7 @@ struct llama_sampler_logit_bias : public llama_sampler_backend {
     const int32_t n_vocab;
 
     const std::vector<llama_logit_bias> logit_bias;
+    const std::vector<llama_logit_bias> backend_bias;
 
     std::vector<llama_logit_bias> to_search;
 
@@ -3960,7 +4010,7 @@ static void llama_sampler_logit_bias_backend_apply(
         return;
     }
 
-    const size_t n = sctx->logit_bias.size();
+    const size_t n = sctx->backend_bias.size();
 
     if (sctx->inp_logit_bias == nullptr) {
         GGML_ASSERT(sctx->inp_logit_idxs == nullptr);
@@ -3992,12 +4042,12 @@ static void llama_sampler_logit_bias_backend_set_input(struct llama_sampler * sm
     GGML_ASSERT(sctx->inp_logit_bias != nullptr);
     GGML_ASSERT(sctx->inp_logit_idxs != nullptr);
 
-    const size_t n = sctx->logit_bias.size();
+    const size_t n = sctx->backend_bias.size();
 
     std::vector<float>   data_logit_bias(n, 0.0f);
     std::vector<int32_t> data_logit_idxs(n, 0);
     for (size_t i = 0; i < n; ++i) {
-        const auto & lb = sctx->logit_bias[i];
+        const auto & lb = sctx->backend_bias[i];
         GGML_ASSERT(lb.token >= 0 && lb.token < (int32_t) sctx->n_vocab);
         data_logit_bias[i] = lb.bias;
         data_logit_idxs[i] = lb.token;
@@ -4056,12 +4106,25 @@ struct llama_sampler * llama_sampler_init_logit_bias(
         return llama_sampler_init_empty("?logit-bias");
     }
 
+    // SET_ROWS requires unique indices. Add duplicate biases before uploading them.
+    std::vector<llama_logit_bias> backend_bias;
+    std::unordered_map<llama_token, size_t> indices;
+    for (int32_t i = 0; i < n_logit_bias; ++i) {
+        const auto inserted = indices.emplace(logit_bias[i].token, backend_bias.size());
+        if (inserted.second) {
+            backend_bias.push_back(logit_bias[i]);
+        } else {
+            backend_bias[inserted.first->second].bias += logit_bias[i].bias;
+        }
+    }
+
     return llama_sampler_init(
         /* .iface = */ &llama_sampler_logit_bias_i,
         /* .ctx   = */ new llama_sampler_logit_bias {
             ("logit-bias"),
             /* .n_vocab        = */ n_vocab,
             /* .logit_bias     = */ std::vector<llama_logit_bias>(logit_bias, logit_bias + n_logit_bias),
+            /* .backend_bias   = */ std::move(backend_bias),
             /* .to_search      = */ {},
             /* .inp_logit_bias = */ nullptr,
             /* .inp_logit_idxs = */ nullptr,

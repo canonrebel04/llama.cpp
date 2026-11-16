@@ -18,6 +18,7 @@ class llama_memory_recurrent : public llama_memory_i {
 public:
     llama_memory_recurrent(
             const llama_model & model,
+                         bool   no_alloc,
                     ggml_type   type_r,
                     ggml_type   type_s,
                          bool   offload,
@@ -60,6 +61,9 @@ public:
     bool find_slot(const llama_ubatch & ubatch);
 
     bool get_can_shift() const override;
+    bool can_decode_sampled() const override { return n_rs_seq > 0 && !next_snapshot_mode.sparse; }
+    bool recurrent_sparse_snapshots_supported() const override;
+    bool recurrent_set_sparse_snapshot_mode(bool enabled, int32_t selected_token) override;
 
     // state write/load
 
@@ -72,6 +76,9 @@ public:
 
     // number of recurrent-state snapshots per seq for rollback; tensors are widened to (1 + n_rs_seq) groups
     uint32_t n_rs_seq = 0;
+
+    std::vector<llama_pos> rs_plane_pos;
+    std::vector<bool> rs_plane_pos_sparse;
 
     // per-seq rollback index
     std::vector<uint32_t> rs_idx;
@@ -90,6 +97,10 @@ public:
         int32_t   src  = -1; // used to know where states should be copied from
         int32_t   src0 = -1; // like src, but only used when setting the inputs (allowing to copy once)
         int32_t   tail = -1;
+
+        // largest rollback whose snapshot the last ubatch guarantees: a ubatch of n <= n_rs_seq + 1 tokens
+        // writes snapshots 0..n-1, a longer one only guarantees the final state (ggml_gated_delta_net)
+        uint32_t rs_max = 0;
 
         std::set<llama_seq_id> seq_id;
 
@@ -115,13 +126,19 @@ public:
     std::vector<ggml_tensor *> p_l;
 
 private:
+    friend class llama_memory_recurrent_context;
+
     //const llama_model & model;
     const llama_hparams & hparams;
+    const bool graph_supports_sparse_snapshots;
 
     const uint32_t n_seq_max = 1;
 
-    // ggml contexts for the KV cache along with the allocated backend buffers:
-    std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs;
+    llama_recurrent_snapshot_mode next_snapshot_mode;
+    bool sparse_metadata_active = false;
+
+    // ggml contexts for the RS cache along with the allocated backend buffers:
+    llama_memory_bufs ctxs_bufs;
 
     // true if no layers - can happen if the layer filter removes all layers
     bool is_empty() const;
@@ -131,6 +148,9 @@ private:
     size_t size_r_bytes() const;
     size_t size_s_bytes() const;
     size_t size_p_bytes() const;
+
+    bool seq_id_valid(llama_seq_id seq_id) const;
+    int32_t find_sparse_snapshot_plane(llama_seq_id seq_id, llama_pos pos) const;
 
     void state_write_meta(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id = -1) const;
     void state_write_data(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges) const;
@@ -154,6 +174,11 @@ public:
     llama_memory_recurrent_context(
             llama_memory_recurrent * mem,
             std::vector<llama_ubatch> ubatches);
+
+    llama_memory_recurrent_context(
+            llama_memory_recurrent * mem,
+            std::vector<llama_ubatch> ubatches,
+            llama_recurrent_snapshot_mode snapshot_mode);
 
     virtual ~llama_memory_recurrent_context();
 
@@ -182,10 +207,14 @@ public:
 
     int32_t s_copy(int i) const;
 
+    const llama_recurrent_snapshot_mode & get_snapshot_mode() const;
+
 private:
     const llama_memory_status status;
 
     llama_memory_recurrent * mem;
+
+    const llama_recurrent_snapshot_mode snapshot_mode;
 
     size_t i_next = 0;
 
