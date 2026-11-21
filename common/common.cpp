@@ -1334,14 +1334,14 @@ void common_fit_apply(common_params & params, llama_model_params & mparams, llam
     cparams_dft.n_rs_seq = 0;
 
     const common_fit_extra_model extra = {
-        /*.path_model   =*/ params_dft.model.path.c_str(),
+        /*.paths_model  =*/ params_dft.model.get_paths(),
         /*.mparams      =*/ &mparams_dft,
         /*.cparams      =*/ &cparams_dft,
         /*.shares_model =*/ !has_draft, // an MTP context runs on the weights of the main model
     };
 
     const common_params_fit_status fit_status = common_fit_params(
-        params.model.path.c_str(), &mparams, &cparams,
+        params.model.get_paths(), &mparams, &cparams,
         params.tensor_split,
         params.tensor_buft_overrides.data(),
         &params.moe_cache,
@@ -1393,7 +1393,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         }
     }
 
-    llama_model * model = llama_model_load_from_file(params.model.path.c_str(), mparams);
+    llama_model * model = common_model_load(params.model.get_paths(), mparams);
     if (model == NULL) {
         return;
     }
@@ -1424,6 +1424,11 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         cparams.n_outputs_max_per_seq = 1;
 
         LOG_INF("%s", "decision model reads the embeddings output, enabling embedding mode\n");
+    }
+
+    // 0 is n_batch
+    if ((decision_type == COMMON_DECISION_TYPE_LFM3_D1 || decision_type == COMMON_DECISION_TYPE_LFM3_D1_OMNI) && cparams.n_outputs_max != 0) {
+        cparams.n_outputs_max = std::max(cparams.n_outputs_max, (uint32_t) COMMON_DECISION_LFM3_D1_SET_SIZE);
     }
 
     if (llama_model_classifier_free_guidance(model)) {
@@ -1856,6 +1861,19 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
                                           std::find(params.speculative.types.begin(), params.speculative.types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE) != params.speculative.types.end();
 
     return mparams;
+}
+
+struct llama_model * common_model_load(const std::vector<std::string> & paths, const struct llama_model_params & mparams) {
+    if (paths.size() == 1) {
+        return llama_model_load_from_file(paths[0].c_str(), mparams);
+    }
+
+    std::vector<const char *> c_paths;
+    c_paths.reserve(paths.size());
+    for (const auto & path : paths) {
+        c_paths.push_back(path.c_str());
+    }
+    return llama_model_load_from_splits(c_paths.data(), c_paths.size(), mparams);
 }
 
 struct llama_context_params common_context_params_to_llama(const common_params & params) {
@@ -2493,6 +2511,9 @@ llama_batch_ext * common_batch::get_sub_batch(int32_t off, int32_t n) {
         }
         if (t.decision_order != 0) {
             llama_batch_ext_set_decision_order(res, idx, (llama_decision_order) t.decision_order);
+        }
+        if (t.decision_group != 0 && !llama_batch_ext_set_decision_group(res, idx, t.decision_group)) {
+            GGML_ABORT("%s: failed to set the decision group of the entry at index %d\n", __func__, i);
         }
     }
 
