@@ -4,6 +4,7 @@
 #include "ggml.h"
 #include "ggml-cpp.h"
 #include "llama.h"
+#include "../src/llama-ext.h" // staging API: llama_set_embeddings_nextn / llama_get_embeddings_nextn_ith (used by MTP)
 #include "log.h"
 #include "ngram-cache.h"
 #include "ngram-map.h"
@@ -1109,6 +1110,9 @@ protected:
         auto * ctx_dft = this->params.ctx_dft;
 
         const llama_model * model_dft = llama_get_model(ctx_dft);
+        const llama_dflash_variant dflash_variant = llama_model_dflash_variant(model_dft);
+        const bool is_dflash2  = dflash_variant == LLAMA_DFLASH_VARIANT_DFLASH2;
+        const bool is_lilicorr = dflash_variant == LLAMA_DFLASH_VARIANT_LILICORR;
 
         const int32_t n_draft_max = opt.n_draft_max;
         if (this->params.n_max > n_draft_max || this->params.n_min > n_draft_max) {

@@ -6807,7 +6807,7 @@ bool ggml_cuda_graph_capture_state_query_for_test(
     // right after instantiation, so only the executable instances survive.
     state->graph = 0;
     state->instance = graph->second->instances.empty() ? 0 :
-        reinterpret_cast<uintptr_t>(graph->second->instances.front());
+        reinterpret_cast<uintptr_t>(graph->second->instances.front().handle);
     state->execution_semantic_key = graph->second->execution_semantic_key;
     state->moe_resource_fingerprint = graph->second->moe_resource_fingerprint;
     state->warmup_complete = graph->second->warmup_complete;

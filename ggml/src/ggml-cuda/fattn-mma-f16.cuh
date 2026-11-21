@@ -465,7 +465,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
     const int chunks_per_row = D2 / h2_per_chunk;
     if constexpr (use_cp_async) {
         static_assert(warp_size == 32, "bad warp_size");
-        static_assert(!oob_check, "OOB check not compatible with cp_async");
+        static_assert(!oob_check || use_sparse, "OOB check not compatible with cp_async");
         constexpr int preload = 64;
 
         const unsigned int tile_KV_32 = ggml_cuda_cvta_generic_to_shared(tile_KV);
@@ -2523,12 +2523,14 @@ static __global__ void flash_attn_ext_f16(
             constexpr bool needs_fixup = false; // CUDA block is working on an entire tile.
             flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, compact_causal_prefix, use_sparse, needs_fixup, is_fixup, type_K, type_V, output_partial>
                 (Q_f2, K_h2, V_h2, mask_h, indices, sinks_f, dstk, dst_meta_tile, scale, slope, logit_softcap,
-                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
+                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa,
+                 kb0_rot, kb0_rot + kb0_stop - kb0_start, kb0_max);
         } else {
             constexpr bool needs_fixup = true; // CUDA block is missing the beginning of a tile.
             flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, compact_causal_prefix, use_sparse, needs_fixup, is_fixup, type_K, type_V, output_partial>
                 (Q_f2, K_h2, V_h2, mask_h, indices, sinks_f, dstk, dst_meta_tile, scale, slope, logit_softcap,
-                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
+                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa,
+                 kb0_rot, kb0_rot + kb0_stop - kb0_start, kb0_max);
         }
 
         kbc += iter_k;
@@ -2578,7 +2580,8 @@ static __global__ void flash_attn_ext_f16(
     constexpr bool needs_fixup = false;
     flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, compact_causal_prefix, use_sparse, needs_fixup, is_fixup, type_K, type_V, output_partial>
         (Q_f2, K_h2, V_h2, mask_h, indices, sinks_f, dstk, dst_meta_tile, scale, slope, logit_softcap,
-         ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
+         ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa,
+         kb0_rot, kb0_rot + kb0_stop - kb0_start, kb0_max);
 #else
     GGML_UNUSED_VARS(Q_ptr, K_ptr, V_ptr, mask_ptr, sinks_ptr, KV_max_ptr, KV_rows_ptr, dst_ptr, dst_meta_ptr, scale,
         max_bias, m0, m1, n_head_log2, logit_softcap,

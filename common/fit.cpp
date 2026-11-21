@@ -544,7 +544,7 @@ common_device_memory_data_vec common_get_device_memory_data(
 }
 
 common_device_memory_data_vec common_get_device_memory_data_with_parent(
-        const char * path_model,
+        const std::vector<std::string> & paths_model,
         const llama_model_params * mparams,
         const llama_context_params * cparams,
         const char * path_parent,
@@ -574,7 +574,7 @@ common_device_memory_data_vec common_get_device_memory_data_with_parent(
     }
 
     std::vector<llama_device_memory_data> impl = common_get_device_memory_data_impl(
-            path_model, mparams, cparams, devs, hp_ngl, hp_ngl_skip, hp_n_ctx_train, hp_n_expert,
+            paths_model, mparams, cparams, devs, hp_ngl, hp_ngl_skip, hp_n_ctx_train, hp_n_expert,
             log_level, nullptr, ctx_parent.get());
 
     common_device_memory_data_vec ret(impl.size());
@@ -648,7 +648,7 @@ static void common_params_fit_impl(
                 mparams_parent_copy.no_alloc  = true;
                 mparams_parent_copy.load_mode = LLAMA_LOAD_MODE_NONE;
 
-                llama_model_ptr model_parent(llama_model_load_from_file(path_model, mparams_parent_copy));
+                llama_model_ptr model_parent(common_model_load(paths_model, mparams_parent_copy));
                 if (model_parent == nullptr) {
                     throw std::runtime_error("failed to load parent model");
                 }
@@ -657,7 +657,7 @@ static void common_params_fit_impl(
                     throw std::runtime_error("failed to create parent llama_context");
                 }
                 return common_get_device_memory_data_impl(
-                    extra->path_model, extra->mparams, extra->cparams, devs_out, ngl_extra, nsk_extra, nct_extra, nex_extra,
+                    extra->paths_model, extra->mparams, extra->cparams, devs_out, ngl_extra, nsk_extra, nct_extra, nex_extra,
                     log_level, nullptr, ctx_parent.get());
             };
 
@@ -1158,7 +1158,7 @@ static void common_params_fit_impl(
         uint32_t candidate_nct = 0;
         uint32_t candidate_nex = 0;
         candidate_memory = common_get_device_memory_data_impl(
-                path_model, &candidate, cparams, candidate_devs,
+                paths_model, &candidate, cparams, candidate_devs,
                 candidate_ngl, candidate_nsk, candidate_nct, candidate_nex, log_level);
         if (candidate_devs != devs || candidate_memory.size() != nd + 1) {
             return false;
@@ -1566,7 +1566,7 @@ static void common_params_fit_impl(
                     std::vector<ggml_backend_dev_t> candidate_devs;
                     uint32_t c_ngl = 0, c_nsk = 0, c_nct = 0, c_nex = 0;
                     dmds_t candidate_memory = common_get_device_memory_data_impl(
-                            path_model, &candidate, cparams, candidate_devs,
+                            paths_model, &candidate, cparams, candidate_devs,
                             c_ngl, c_nsk, c_nct, c_nex, log_level);
                     if (candidate_devs == devs && candidate_memory.size() == nd + 1) {
                         add_extra_memory(candidate_memory);

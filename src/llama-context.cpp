@@ -7173,6 +7173,7 @@ llama_context * llama_init_from_model(
                 }
             }
         }
+    }
 
     if (ggml_is_quantized(params.type_v) && params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_ENABLED) {
         if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO) {

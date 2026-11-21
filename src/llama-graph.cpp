@@ -2806,8 +2806,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_build_forward_expand(gf, cur);
 
     // the experts of host-resident layers may be read from the MoE cache (see llama_moe_cache::build_lookup)
-    const llama_moe_cache_lookup cache = moe_cache == nullptr ? llama_moe_cache_lookup{} :
-        moe_cache->build_lookup(*this, { il, up_exps, gate_exps, down_exps, gate_up_exps, weight_before_ffn }, selected_experts);
+    const llama_moe_cache_lookup cache = this->moe_cache == nullptr ? llama_moe_cache_lookup{} :
+        this->moe_cache->build_lookup(*this, { il, up_exps, gate_exps, down_exps, gate_up_exps, weight_before_ffn }, selected_experts);
 
     // fork: MoE expert packs (hot/cold residency split): split routed ids into hot-pack ids and cold ids.
     // scope: plain fused-SILU gated FFN (no clamp, no expert biases/scales,
@@ -3058,7 +3058,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     } else if (cache.slots == nullptr) {
         experts = build_experts(cur, selected_experts, nullptr, true);
     } else {
-        experts = moe_cache->build_experts(*this, cache, cur, selected_experts,
+        experts = this->moe_cache->build_experts(*this, cache, cur, selected_experts,
                 [](ggml_tensor * cur, ggml_tensor * ids, ggml_tensor * mm_ids, bool cached, void * user_data) {
                     return (*static_cast<decltype(build_experts) *>(user_data))(cur, ids, mm_ids, cached);
                 }, &build_experts);

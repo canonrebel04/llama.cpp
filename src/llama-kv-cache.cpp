@@ -874,7 +874,7 @@ llama_kv_cache::llama_kv_cache(
 
         bool attn_rot_k_full = false;
 
-        bool attn_rot_k =
+        attn_rot_k =
             !attn_rot_disable &&
             n_embd_head_k_all > 0 &&
             ggml_is_quantized(type_k) &&
@@ -2304,8 +2304,6 @@ ggml_tensor * llama_kv_cache::get_v_scale(int32_t il) const {
 
     return layers[ikv].v_scale;
 }
-
-ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const {
 
 ggml_tensor * llama_kv_cache::stage_store_rows(
         ggml_context * ctx,
@@ -4164,10 +4162,6 @@ ggml_tensor * llama_kv_cache_context::get_k_scale(int32_t il) const {
 
 ggml_tensor * llama_kv_cache_context::get_v_scale(int32_t il) const {
     return kv->get_v_scale(il);
-}
-
-ggml_tensor * llama_kv_cache_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
-    return kv->cpy_k(ctx, k_cur, k_idxs, il, sinfos[i_cur]);
 }
 
 ggml_tensor * llama_kv_cache_context::get_turbo_rotation_inv() const {

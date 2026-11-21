@@ -366,7 +366,7 @@ llama_model_bailing_hybrid::graph::graph(const llm_graph_params & params) :
             Qcur = ggml_l2_norm(ctx0, Qcur, eps_norm);
             Kcur = ggml_l2_norm(ctx0, Kcur, eps_norm);
 
-            auto attn_out = build_delta_net(Qcur, Kcur, Vcur, g1, beta, state, il);
+            auto attn_out = build_delta_net(Qcur, Kcur, Vcur, g1, beta, state);
 
             ggml_tensor * output    = ggml_cont(ctx0, attn_out.first);
             ggml_tensor * new_state = attn_out.second;
