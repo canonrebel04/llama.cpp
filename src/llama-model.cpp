@@ -3596,7 +3596,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         nullptr,
                         nullptr,
                         nullptr,
-                        nullptr);
+                        nullptr,
+                        placement);
             } break;
         case LLM_ARCH_HY_V4:
             {

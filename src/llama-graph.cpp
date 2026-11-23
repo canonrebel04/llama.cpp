@@ -4461,7 +4461,7 @@ static std::unique_ptr<llm_graph_input_attn_k_dsa> build_attn_inp_k_dsa_impl(
     {
         inp->self_k_idxs_lid = mctx_cur->get_lid()->build_input_k_idxs(ctx0, ubatch);
 
-        inp->self_attn_mask_lid.raw = build_attn_inp_kq_mask(ctx0, mctx_cur->get_lid(), ubatch, cparams, true);
+        inp->self_attn_mask_lid.raw = build_attn_inp_kq_mask_dense(ctx0, mctx_cur->get_lid(), ubatch, cparams, true);
 
         inp->self_k_rot_lid = mctx_cur->get_lid()->get_k_rot();
     }

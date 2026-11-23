@@ -649,7 +649,6 @@ llama_model_deepseek2::graph::graph(const llm_graph_params & params) :
                 il,
                 nullptr,
                 model.layers[il].ffn_gate_up_exps,
-                nullptr, nullptr, nullptr,
                 nullptr, nullptr, 1e-5f, &model.layers[il]); // selected_experts_in, post_exp_norm, post_exp_norm_eps, moe_cache
             cb(moe_out, "ffn_moe_out", il);
 

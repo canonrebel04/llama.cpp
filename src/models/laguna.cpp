@@ -291,7 +291,6 @@ llama_model_laguna::graph::graph(const llm_graph_params & params) : llm_graph_co
                     (llama_expert_gating_func_type) hparams.expert_gating_func,
                     il,
                     nullptr, nullptr,
-                    nullptr, nullptr, nullptr,
                     nullptr, nullptr, 1e-5f, &model.layers[il]); // selected_experts_in, post_exp_norm, post_exp_norm_eps, moe_cache
             cb(moe_out, "ffn_moe_out", il);
 
