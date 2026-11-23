@@ -11,6 +11,7 @@
 #include "../tools/server/server-chat.h"
 #include "../tools/server/server-speculative-replay.h"
 #include "../tools/server/server-task.h"
+#include "../tools/server/server-slot-sched.h"
 #include "chat-auto-parser.h"
 #include "chat.h"
 #include "json-schema-to-grammar.h"

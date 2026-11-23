@@ -1,4 +1,5 @@
 #include "test-moe-cache.h"
+#include <stdexcept>
 
 #include "../src/llama-batch.h"
 #include "../src/llama-context.h"

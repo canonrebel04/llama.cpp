@@ -1,5 +1,6 @@
 #include "../src/llama-context.h"
 #include "../src/llama-graph.h"
+#include "../src/llama-model.h"
 #include "ggml-cuda/moe-cache-host.cuh"
 #include "test-moe-cache.h"
 
@@ -30,6 +31,7 @@ struct layer_fixture {
     ggml_backend_buffer_ptr                           weight_buffer;
     ggml_backend_buffer_type_t                        buft = nullptr;
     llm_graph_result                                  result{ 256 };
+    std::unique_ptr<llama_model>                      graph_model;
     ggml_tensor *                                     input      = nullptr;
     ggml_tensor *                                     logits[2]  = {};
     ggml_tensor *                                     ids[2]     = {};
@@ -94,7 +96,9 @@ struct layer_fixture {
         auto *              cur = input;
         llama_adapter_loras loras;
         llm_graph_params    params{};
-        params.arch                = LLM_ARCH_QWEN3MOE;
+        // the graph context reads the arch from the model (llm_graph_params::arch is gone)
+        graph_model.reset(llama_model_create(LLM_ARCH_QWEN3MOE, llama_model_default_params()));
+        params.model               = graph_model.get();
         params.hparams.n_embd      = n_dim;
         params.hparams.n_layer_all = 2;
         params.hparams.n_expert    = n_experts;
