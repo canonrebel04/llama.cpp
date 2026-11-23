@@ -15,6 +15,7 @@
 #include "../src/llama-ext.h"
 #include "../src/llama-memory-hybrid-idx.h"
 #include "../src/llama-model-saver.h"
+#include "test-llama-batch-legacy.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -1075,7 +1076,7 @@ static void test_live_context_workspace_reserve(size_t seed) {
     for (int32_t chunk = 0; chunk < 9; ++chunk) {
         llama_batch batch = llama_batch_init(ctx_params.n_batch, 0, 1);
         for (int32_t i = 0; i < (int32_t) ctx_params.n_batch; ++i) {
-            common_batch_add(batch, tokens[pos], pos, { 0 }, i + 1 == (int32_t) ctx_params.n_batch);
+            test_batch_add(batch, tokens[pos], pos, { 0 }, i + 1 == (int32_t) ctx_params.n_batch);
             ++pos;
         }
         GGML_ASSERT(llama_decode(ctx.get(), batch) == 0);
@@ -1091,7 +1092,7 @@ static void test_live_context_workspace_reserve(size_t seed) {
     llama_memory_seq_add(llama_get_memory(ctx.get()), 0, 512, pos, -512);
 
     llama_batch shifted = llama_batch_init(1, 0, 1);
-    common_batch_add(shifted, tokens[pos], pos - 512, { 0 }, true);
+    test_batch_add(shifted, tokens[pos], pos - 512, { 0 }, true);
     GGML_ASSERT(llama_decode(ctx.get(), shifted) == 0);
     llama_synchronize(ctx.get());
     llama_batch_free(shifted);
@@ -1104,7 +1105,7 @@ static void test_live_context_workspace_reserve(size_t seed) {
 
     llama_memory_clear(llama_get_memory(ctx.get()), false);
     llama_batch short_batch = llama_batch_init(1, 0, 1);
-    common_batch_add(short_batch, tokens[0], 0, { 0 }, true);
+    test_batch_add(short_batch, tokens[0], 0, { 0 }, true);
     GGML_ASSERT(llama_decode(ctx.get(), short_batch) == 0);
     llama_synchronize(ctx.get());
     llama_batch_free(short_batch);
@@ -1135,7 +1136,7 @@ static void test_live_context_workspace_iswa_reserve(size_t seed) {
     for (int32_t chunk = 0; chunk < 9; ++chunk) {
         llama_batch batch = llama_batch_init(ctx_params.n_batch, 0, 1);
         for (int32_t i = 0; i < (int32_t) ctx_params.n_batch; ++i) {
-            common_batch_add(batch, tokens[pos], pos, { 0 }, i + 1 == (int32_t) ctx_params.n_batch);
+            test_batch_add(batch, tokens[pos], pos, { 0 }, i + 1 == (int32_t) ctx_params.n_batch);
             ++pos;
         }
         GGML_ASSERT(llama_decode(ctx.get(), batch) == 0);
@@ -1148,7 +1149,7 @@ static void test_live_context_workspace_iswa_reserve(size_t seed) {
 
     llama_memory_clear(llama_get_memory(ctx.get()), false);
     llama_batch short_batch = llama_batch_init(1, 0, 1);
-    common_batch_add(short_batch, tokens[0], 0, { 0 }, true);
+    test_batch_add(short_batch, tokens[0], 0, { 0 }, true);
     GGML_ASSERT(llama_decode(ctx.get(), short_batch) == 0);
     llama_synchronize(ctx.get());
     llama_batch_free(short_batch);
@@ -1236,7 +1237,7 @@ static void test_phase_workspace_runtime_reserve(size_t seed) {
     llama_batch batch = llama_batch_init(16, 0, 1);
     const std::vector<llama_token> tokens = get_tokens(16, llama_vocab_n_tokens(llama_model_get_vocab(model.get())), seed);
     for (int32_t i = 0; i < 16; ++i) {
-        common_batch_add(batch, tokens[i], i, { 0 }, true);
+        test_batch_add(batch, tokens[i], i, { 0 }, true);
     }
 
     phase_workspace_fail_alloc = true;
@@ -1277,7 +1278,7 @@ static void test_phase_workspace_runtime_reserve(size_t seed) {
     for (int32_t width = 1; width <= 4; width *= 2) {
         llama_batch declared = llama_batch_init(width, 0, 1);
         for (int32_t i = 0; i < width; ++i) {
-            common_batch_add(declared, tokens[i], pos++, { 0 }, true);
+            test_batch_add(declared, tokens[i], pos++, { 0 }, true);
         }
         GGML_ASSERT(llama_decode(ctx.get(), declared) == 0);
         llama_synchronize(ctx.get());
@@ -1343,7 +1344,7 @@ static void test_phase_workspace_late_pipeline_fallback(size_t seed) {
     const std::vector<llama_token> tokens = get_tokens(16,
             llama_vocab_n_tokens(llama_model_get_vocab(model.get())), seed);
     for (int32_t i = 0; i < 16; ++i) {
-        common_batch_add(batch, tokens[i], i, { 0 }, i == 15);
+        test_batch_add(batch, tokens[i], i, { 0 }, i == 15);
     }
     GGML_ASSERT(llama_decode(ctx.get(), batch) == 0);
     llama_synchronize(ctx.get());
@@ -1357,6 +1358,16 @@ static void test_phase_workspace_late_pipeline_fallback(size_t seed) {
     llama_batch_free(batch);
 }
 
+// fork: mirror a legacy llama_batch into a common_batch for the common_speculative API
+static common_batch to_common_batch(llama_context * ctx, const llama_batch & b) {
+    common_batch res(ctx);
+    for (int32_t i = 0; i < b.n_tokens; ++i) {
+        const std::vector<llama_seq_id> seq_ids(b.seq_id[i], b.seq_id[i] + b.n_seq_id[i]);
+        res.add(b.token[i], b.pos[i], seq_ids, b.logits[i] != 0);
+    }
+    return res;
+}
+
 static llama_batch make_mtp_batch(
         int32_t n_tokens, int32_t n_embd, int32_t pos, uint32_t n_vocab, size_t seed) {
     llama_batch batch = llama_batch_init(n_tokens, n_embd, 1);
@@ -1365,7 +1376,7 @@ static llama_batch make_mtp_batch(
 
     const std::vector<llama_token> tokens = get_tokens(n_tokens, n_vocab, seed);
     for (int32_t i = 0; i < n_tokens; ++i) {
-        common_batch_add(batch, tokens[i], pos + i, { 0 }, i == n_tokens - 1);
+        test_batch_add(batch, tokens[i], pos + i, { 0 }, i == n_tokens - 1);
         for (int32_t j = 0; j < n_embd; ++j) {
             batch.embd[(size_t) i * n_embd + j] = (float) ((i + j) % 17) / 17.0f;
         }
@@ -1551,8 +1562,8 @@ static void test_speculative_limits(size_t seed) {
 
         llama_batch verify = llama_batch_init(4, 0, 1);
         for (llama_seq_id seq_id = 0; seq_id < 2; ++seq_id) {
-            common_batch_add(verify, 2 + seq_id, 0, { seq_id }, true);
-            common_batch_add(verify, proposals[seq_id][0], 1, { seq_id }, true);
+            test_batch_add(verify, 2 + seq_id, 0, { seq_id }, true);
+            test_batch_add(verify, proposals[seq_id][0], 1, { seq_id }, true);
         }
         GGML_ASSERT(llama_decode(target_retained.get(), verify) == 0);
         llama_synchronize(target_retained.get());
@@ -1562,7 +1573,7 @@ static void test_speculative_limits(size_t seed) {
             GGML_ASSERT(llama_memory_seq_rm(draft_mem, seq_id, -1, -1));
             GGML_ASSERT(common_speculative_set_mtp_state(spec.get(), seq_id, pending_initial[seq_id]));
         }
-        GGML_ASSERT(common_speculative_process(spec.get(), verify));
+        GGML_ASSERT(common_speculative_process(spec.get(), to_common_batch(target_retained.get(), verify)));
 
         std::vector<uint8_t> canonical_accepted_state[2];
         std::vector<uint8_t> canonical_accepted_pending[2];
@@ -1590,7 +1601,7 @@ static void test_speculative_limits(size_t seed) {
             GGML_ASSERT(common_speculative_retain_draft_state(spec.get(), seq_id));
         }
 
-        GGML_ASSERT(common_speculative_process(spec.get(), verify));
+        GGML_ASSERT(common_speculative_process(spec.get(), to_common_batch(target_retained.get(), verify)));
         common_speculative_accept(spec.get(), 0, 0);
         common_speculative_accept(spec.get(), 1, 1);
         GGML_ASSERT(common_speculative_has_deferred_accept(spec.get(), 0));
@@ -1613,7 +1624,7 @@ static void test_speculative_limits(size_t seed) {
             GGML_ASSERT(common_speculative_retain_draft_state(spec.get(), seq_id));
         }
 
-        GGML_ASSERT(common_speculative_process(spec.get(), verify));
+        GGML_ASSERT(common_speculative_process(spec.get(), to_common_batch(target_retained.get(), verify)));
         common_speculative_accept(spec.get(), 0, 1);
         common_speculative_accept(spec.get(), 1, 1);
 
@@ -1639,7 +1650,7 @@ static void test_speculative_limits(size_t seed) {
             GGML_ASSERT(common_speculative_retain_draft_state(spec.get(), seq_id));
         }
 
-        GGML_ASSERT(common_speculative_process(spec.get(), verify));
+        GGML_ASSERT(common_speculative_process(spec.get(), to_common_batch(target_retained.get(), verify)));
         common_speculative_accept(spec.get(), 0, 1);
         common_speculative_accept(spec.get(), 1, 1);
         GGML_ASSERT(!common_speculative_finish_accept(spec.get(), {
@@ -1658,7 +1669,7 @@ static void test_speculative_limits(size_t seed) {
             GGML_ASSERT(common_speculative_retain_draft_state(spec.get(), seq_id));
         }
 
-        GGML_ASSERT(common_speculative_process(spec.get(), verify));
+        GGML_ASSERT(common_speculative_process(spec.get(), to_common_batch(target_retained.get(), verify)));
         common_speculative_accept(spec.get(), 0, 1);
         common_speculative_accept(spec.get(), 1, 1);
         GGML_ASSERT(!common_speculative_finish_accept(spec.get(), {
@@ -1709,7 +1720,7 @@ static void test_phase_workspace_mtp_lifecycle(size_t seed) {
     llama_batch target_batch = llama_batch_init(4, 0, 1);
     const std::vector<llama_token> tokens = get_tokens(4, n_vocab, seed);
     for (int32_t i = 0; i < 4; ++i) {
-        common_batch_add(target_batch, tokens[i], i, { 0 }, true);
+        test_batch_add(target_batch, tokens[i], i, { 0 }, true);
     }
     llama_batch draft_batch = make_mtp_batch(4, n_embd, 0, n_vocab, seed + 1);
 
@@ -1759,10 +1770,10 @@ static void test_phase_workspace_mtp_lifecycle(size_t seed) {
     draft_workspace->iface.synchronize = phase_workspace_count_synchronize;
 
     llama_batch target_catchup = llama_batch_init(1, 0, 1);
-    common_batch_add(target_catchup, tokens[0], 4, { 0 }, true);
+    test_batch_add(target_catchup, tokens[0], 4, { 0 }, true);
     llama_batch draft_catchup = make_mtp_batch(1, n_embd, 4, n_vocab, seed + 2);
     llama_batch target_reacquire = llama_batch_init(1, 0, 1);
-    common_batch_add(target_reacquire, tokens[1], 5, { 0 }, true);
+    test_batch_add(target_reacquire, tokens[1], 5, { 0 }, true);
     GGML_ASSERT(llama_decode(target.get(), target_catchup) == 0);
     GGML_ASSERT(llama_decode(draft.get(), draft_catchup) == 0);
     GGML_ASSERT(phase_workspace_sync_calls[0] > 0);
@@ -1882,7 +1893,7 @@ static void test_phase_workspace_mismatched_placement(size_t seed) {
     const uint32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(target_model.get()));
     const int32_t n_embd = llama_model_n_embd_out(draft_model.get());
     llama_batch target_batch = llama_batch_init(1, 0, 1);
-    common_batch_add(target_batch, get_tokens(1, n_vocab, seed)[0], 0, { 0 }, true);
+    test_batch_add(target_batch, get_tokens(1, n_vocab, seed)[0], 0, { 0 }, true);
     llama_batch draft_batch = make_mtp_batch(1, n_embd, 0, n_vocab, seed + 1);
     GGML_ASSERT(llama_decode(target.get(), target_batch) == 0);
     GGML_ASSERT(llama_decode(draft.get(), draft_batch) == 0);
@@ -1959,9 +1970,9 @@ static bool test_parallel_seqs(llama_model * model, const std::vector<llama_toke
     llama_batch batch_par = llama_batch_init(2*n_tokens, 0, 1);
     llama_batch batch_b   = llama_batch_init(n_tokens, 0, 1);
     for (uint32_t pos = 0; pos < n_tokens; pos++) {
-        common_batch_add(batch_par, tokens[pos],   pos, {0}, true);
-        common_batch_add(batch_par, tokens_b[pos], pos, {1}, true);
-        common_batch_add(batch_b,   tokens_b[pos], pos, {0}, true);
+        test_batch_add(batch_par, tokens[pos],   pos, {0}, true);
+        test_batch_add(batch_par, tokens_b[pos], pos, {1}, true);
+        test_batch_add(batch_b,   tokens_b[pos], pos, {0}, true);
     }
     bool ok = true;
     if (encode) {

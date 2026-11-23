@@ -4,6 +4,7 @@
 #include "common.h"
 #include "../src/llama-ext.h"
 #include "sampling.h"
+#include "test-llama-batch-legacy.h"
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -2278,7 +2279,7 @@ static void test_backend_decode_sampled_batch(const test_params & params) {
                 for (const auto & item : items) {
                     result[item.seq_id].push_back(tokens[item.seq_id]);
                     last_inputs[item.seq_id] = tokens[item.seq_id];
-                    common_batch_add(batch, tokens[item.seq_id], item.pos, {item.seq_id}, true);
+                    test_batch_add(batch, tokens[item.seq_id], item.pos, {item.seq_id}, true);
                 }
                 GGML_ASSERT(llama_decode(tc.ctx.get(), batch) == 0);
                 llama_batch_free(batch);
@@ -2414,11 +2415,11 @@ static void test_backend_decode_sampled_lifecycle(const test_params & params) {
                     ++seq.generation;
                     const auto prompt = common_tokenize(ctx, admission->second, true);
                     for (size_t i = 0; i < prompt.size(); ++i) {
-                        common_batch_add(batch, prompt[i], seq.pos++, {id}, i + 1 == prompt.size());
+                        test_batch_add(batch, prompt[i], seq.pos++, {id}, i + 1 == prompt.size());
                     }
                     output_indices[id] = batch.n_tokens - 1;
                 } else if (seq.active && !seq.pending) {
-                    common_batch_add(batch, seq.last, seq.pos - 1, {id}, true);
+                    test_batch_add(batch, seq.last, seq.pos - 1, {id}, true);
                     output_indices[id] = batch.n_tokens - 1;
                 } else if (seq.active) {
                     output_indices[id] = tc.idx_for_seq(id);

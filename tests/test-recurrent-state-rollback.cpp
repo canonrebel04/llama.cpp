@@ -10,6 +10,7 @@
 
 #include "../src/llama-io.h"
 #include "../src/llama-memory.h"
+#include "test-llama-batch-legacy.h"
 
 #include <algorithm>
 #include <clocale>
@@ -24,7 +25,7 @@
 static bool decode_tokens(llama_context * ctx, const std::vector<llama_token> & tokens, uint32_t count) {
     llama_batch batch = llama_batch_init(count, 0, 1);
     for (uint32_t pos = 0; pos < count; ++pos) {
-        common_batch_add(batch, tokens[pos], pos, { 0 }, pos + 1 == count);
+        test_batch_add(batch, tokens[pos], pos, { 0 }, pos + 1 == count);
     }
     const bool ok = llama_decode(ctx, batch) == 0;
     llama_batch_free(batch);
@@ -33,7 +34,7 @@ static bool decode_tokens(llama_context * ctx, const std::vector<llama_token> & 
 
 static bool decode_one(llama_context * ctx, llama_token tok, llama_pos pos) {
     llama_batch batch = llama_batch_init(1, 0, 1);
-    common_batch_add(batch, tok, pos, { 0 }, true);
+    test_batch_add(batch, tok, pos, { 0 }, true);
     const bool ok = llama_decode(ctx, batch) == 0;
     llama_batch_free(batch);
     return ok;
@@ -47,7 +48,7 @@ static bool test_sparse_metadata_seq_id_bounds(llama_model * model) {
     }
 
     constexpr llama_seq_id high_seq_id = 3;
-    llama_memory_recurrent memory(*model, GGML_TYPE_F32, GGML_TYPE_F32, false, 4, 1, 3, nullptr);
+    llama_memory_recurrent memory(*model, /*no_alloc*/ false, GGML_TYPE_F32, GGML_TYPE_F32, false, 4, 1, 3, nullptr);
 
     memory.rs_idx[0] = 2;
     memory.rs_plane_pos = { 10, 11, 12, 13 };
@@ -186,14 +187,14 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
     for (uint32_t s = 0; s < n_seqs && ok; ++s) {
         llama_batch batch = llama_batch_init(n_prompt, 0, 1);
         for (llama_pos pos = 0; pos < (llama_pos) p0; ++pos) {
-            common_batch_add(batch, tok(s, pos), pos, { (llama_seq_id) s }, false);
+            test_batch_add(batch, tok(s, pos), pos, { (llama_seq_id) s }, false);
         }
         ok = ok && llama_decode(ctx_roll, batch) == 0;
         ok = ok && llama_decode(ctx_ref,  batch) == 0;
 
-        common_batch_clear(batch);
+        test_batch_clear(batch);
         for (llama_pos pos = p0; pos < (llama_pos) n_prompt; ++pos) {
-            common_batch_add(batch, tok(s, pos), pos, { (llama_seq_id) s }, false);
+            test_batch_add(batch, tok(s, pos), pos, { (llama_seq_id) s }, false);
         }
         ok = ok && llama_decode(ctx_roll, batch) == 0;
         llama_batch_free(batch);
@@ -212,7 +213,7 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
     for (uint32_t s = 0; s < n_seqs; ++s) {
         for (uint32_t i = 0; i < n_replay; ++i) {
             const llama_pos pos = p0 + (llama_pos) i;
-            common_batch_add(batch, tok(s, pos), pos, { (llama_seq_id) s }, true);
+            test_batch_add(batch, tok(s, pos), pos, { (llama_seq_id) s }, true);
         }
     }
     ok = llama_decode(ctx_roll, batch) == 0;
@@ -263,7 +264,7 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
         llama_batch batch_tail = llama_batch_init(n_tail, 0, 1);
         for (uint32_t i = 0; i < n_tail; ++i) {
             const llama_pos pos = p0 + (llama_pos) (n_replay + i);
-            common_batch_add(batch_tail, tok(0, pos + 7), pos, { 0 }, false);
+            test_batch_add(batch_tail, tok(0, pos + 7), pos, { 0 }, false);
         }
         ok = llama_decode(ctx_ref, batch_tail) == 0;
         llama_batch_free(batch_tail);
@@ -273,7 +274,7 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
     for (uint32_t i = 0; i < n_tail && ok; ++i) {
         const llama_pos pos = p0 + (llama_pos) (n_replay + i);
         llama_batch batch_one = llama_batch_init(1, 0, 1);
-        common_batch_add(batch_one, tok(1, pos), pos, { 1 }, true);
+        test_batch_add(batch_one, tok(1, pos), pos, { 1 }, true);
         ok = llama_decode(ctx_roll, batch_one) == 0;
         ok = ok && llama_decode(ctx_ref, batch_one) == 0;
         llama_batch_free(batch_one);
@@ -335,9 +336,9 @@ static bool test_sparse_selected_then_trailing(const common_params & params, lla
         }
 
         llama_batch split_batch = llama_batch_init(6, 0, 1);
-        common_batch_add(split_batch, 1 % n_vocab, 0, { 0 }, true);
+        test_batch_add(split_batch, 1 % n_vocab, 0, { 0 }, true);
         for (llama_pos pos = 0; pos < 5; ++pos) {
-            common_batch_add(split_batch, (11*pos + 38) % n_vocab, pos, { 1 }, pos == 4);
+            test_batch_add(split_batch, (11*pos + 38) % n_vocab, pos, { 1 }, pos == 4);
         }
 
         const bool mode_ok = llama_recurrent_set_sparse_snapshot_mode(ctx_split, true, -1);
@@ -357,7 +358,7 @@ static bool test_sparse_selected_then_trailing(const common_params & params, lla
         for (const auto & [seq, start] : ranges) {
             for (uint32_t i = 0; i < count; ++i) {
                 const llama_pos pos = start + (llama_pos) i;
-                common_batch_add(batch, tok(seq, pos), pos, { (llama_seq_id) seq }, i + 1 == count);
+                test_batch_add(batch, tok(seq, pos), pos, { (llama_seq_id) seq }, i + 1 == count);
             }
         }
         const bool ok = llama_decode(decode_ctx, batch) == 0;
@@ -462,7 +463,7 @@ static bool test_sparse_short_trailing_gaps(const common_params & params, llama_
         llama_batch batch = llama_batch_init(count, 0, 1);
         for (uint32_t i = 0; i < count; ++i) {
             const llama_pos pos = first + (llama_pos) i;
-            common_batch_add(batch, tok(pos), pos, { 0 }, i + 1 == count);
+            test_batch_add(batch, tok(pos), pos, { 0 }, i + 1 == count);
         }
         const bool ok = llama_decode(ctx, batch) == 0;
         llama_batch_free(batch);
@@ -743,10 +744,11 @@ int main(int argc, char ** argv) {
 
     std::vector<std::string> models;
     size_t n_unreadable = 0;
-    for (const auto & file : fs_list(params.model.path, false)) {
-        if (!string_ends_with(file.name, ".gguf")) {
+    for (const auto & entry : std::filesystem::directory_iterator(params.model.path)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".gguf") {
             continue;
         }
+        const struct { std::string path; } file = { entry.path().string() };
         llama_model_ptr model(llama_model_load_from_file(file.path.c_str(), mparams));
         if (!model) {
             fprintf(stderr, "%s : cannot read '%s'\n", __func__, file.path.c_str());
