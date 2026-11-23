@@ -482,9 +482,6 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_ffn(ggml_tensor * cur, c
             hparams.expert_weights_scale,
             LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
             nullptr, model.layers[il].ffn_gate_up_exps,
-            model.layers[il].ffn_up_exps_s,
-            model.layers[il].ffn_gate_exps_s,
-            model.layers[il].ffn_down_exps_s,
             nullptr, nullptr, 1e-5f, &model.layers[il]); // selected_experts_in, post_exp_norm, post_exp_norm_eps, moe_cache
     cb(moe_out, "ffn_moe_out", il);
 
@@ -655,9 +652,6 @@ llama_model_qwen35moe::graph_mtp::graph_mtp(const llm_graph_params & params)
             hparams.expert_weights_scale,
             LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
             nullptr, layer.ffn_gate_up_exps,
-            layer.ffn_up_exps_s,
-            layer.ffn_gate_exps_s,
-            layer.ffn_down_exps_s,
             nullptr, nullptr);
     cb(moe_out, "mtp_ffn_moe_out", il);
 

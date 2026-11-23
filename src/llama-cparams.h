@@ -48,8 +48,6 @@ struct llama_cparams {
     bool flash_attn;
     bool flash_attn_causal_prefix_supported;
     bool auto_fa;
-    bool fused_lid;          // use fused lightning indexer
-    bool auto_flid;
     bool fused_dsv4_hc_pre;
     bool fused_dsv4_hc_comb;
     bool fused_dsv4_hc_post;

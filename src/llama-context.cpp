@@ -579,12 +579,6 @@ static const llm_fused_op_probe llm_fused_op_flash_attn_kv_rows_probe = {
     /*.n_tokens_per_seq =*/ 1,
 };
 
-static const llm_fused_op_probe llm_fused_op_lid_probe = {
-    /*.op               =*/ LLM_FUSED_OP_LIGHTNING_INDEXER,
-    /*.name             =*/ "Lightning Indexer",
-    /*.n_tokens_per_seq =*/ 1,
-};
-
 static const llm_fused_op_probe llm_fused_op_dsv4_hc_pre_probe = {
     /*.op               =*/ LLM_FUSED_OP_DSV4_HC_PRE,
     /*.name             =*/ "fused DeepSeek V4 HC pre",
@@ -946,12 +940,6 @@ llama_context::llama_context(
 
     cparams.flash_attn                         = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
     cparams.flash_attn_causal_prefix_supported = false;
-    cparams.fused_lid = true;
-    // fork: keep the fused Lightning Indexer auto-probe enabled (fork default). Upstream turned the
-    // probe off in #27877 and always assumes the fused op; with the probe on, a layer whose backend
-    // lacks GGML_OP_LIGHTNING_INDEXER (e.g. Vulkan/SYCL today) falls back to the non-fused graph on
-    // the same device instead of bouncing the op to the CPU. Cost: one extra graph_reserve at init.
-    cparams.auto_flid = true;
     cparams.auto_fa                            = params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO;
 
     // the KV cache is shared with ctx_other, so follow its flash attention setting instead of resolving it here:
@@ -965,9 +953,6 @@ llama_context::llama_context(
         cparams.flash_attn = flash_attn_other;
         cparams.auto_fa    = false;
     }
-
-    cparams.fused_lid = true;
-    cparams.auto_flid = false;
 
     cparams.fused_dsv4_hc_pre  = true;
     cparams.fused_dsv4_hc_comb = true;
@@ -1767,12 +1752,6 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
     // rollback capability follows the memory module and the model's graph declaration
     if (cparams.n_rs_seq > 0 && model.graph_supports_recurrent_sparse_snapshots()) {
         recurrent_sparse_snapshot_ops_supported = true;
-    }
-
-    if (cparams.auto_flid) {
-        LLAMA_LOG_INFO("%s: resolving fused Lightning Indexer support:\n", func);
-        resolve(llm_fused_op_lid_probe, cparams.fused_lid);
-        cparams.auto_flid = false;
     }
 
     if (cparams.auto_fhc) {
@@ -5789,6 +5768,12 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
     }
     const ggml_tensor * node = ggml_graph_node(graph, 0);
     if (node->op != GGML_OP_MUL_MAT_ID || node->src[0] != dst) {
+        return false;
+    }
+
+    // Later loop passes can select different experts from the same device copy.
+    // TODO: copy only the experts needed by each pass (see #32807 and #32809).
+    if (lctx->model.arch == LLM_ARCH_INKLING2_LOOP) {
         return false;
     }
 
