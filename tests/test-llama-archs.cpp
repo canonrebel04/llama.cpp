@@ -3006,6 +3006,18 @@ int main(int argc, char ** argv) {
     int verbosity = LOG_LEVEL_ERROR;
 
     for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--test-phase-workspace") == 0) {
+            test_phase_workspace = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--test-live-context-workspace") == 0) {
+            test_live_context_workspace = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--test-speculative-limits") == 0) {
+            run_speculative_limits = true;
+            continue;
+        }
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv);
             return 0;
@@ -3075,18 +3087,6 @@ int main(int argc, char ** argv) {
             LOG_ERR("%s: unknown argument: %s\n", __func__, argv[i]);
             usage(argv);
             return 1;
-        }
-        if (strcmp(argv[i], "--test-phase-workspace") == 0) {
-            test_phase_workspace = true;
-            continue;
-        }
-        if (strcmp(argv[i], "--test-live-context-workspace") == 0) {
-            test_live_context_workspace = true;
-            continue;
-        }
-        if (strcmp(argv[i], "--test-speculative-limits") == 0) {
-            run_speculative_limits = true;
-            continue;
         }
     }
     if (test_phase_workspace || test_live_context_workspace || run_speculative_limits) {
