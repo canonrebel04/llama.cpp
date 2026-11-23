@@ -370,6 +370,10 @@ llama_kv_cache::llama_kv_cache(
 
     const auto resolve_store_quantize = [&](uint32_t il, ggml_type type, int64_t n_embd,
                                              kv_store_side side) {
+        // non-quantized types never need the store probe (and must not require a layer device, e.g. in unit tests)
+        if (!ggml_is_quantized(type)) {
+            return false;
+        }
         const bool store_quantize = probe_store_quantize(il, type, n_embd);
         auto * layer_dev = model.dev_layer(il);
         const bool accelerator_layer = layer_dev &&
