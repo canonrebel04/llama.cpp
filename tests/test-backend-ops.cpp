@@ -6136,7 +6136,8 @@ static bool test_gated_delta_net_rejection() {
 
     for (int64_t n_tokens : { 1, 2 }) {
         test_gated_delta_net sparse_test(GGML_TYPE_F32, 2, 16, n_tokens, 1, 2, false, false, 4,
-                                         (int32_t) n_tokens, -1, true);
+                                         /*correlated*/ false, /*padded_v*/ false, /*padded_q*/ false, /*permuted_k*/ false,
+                                         /*g_min*/ -20.0f, (int32_t) n_tokens, -1, true);
         ggml_tensor * sparse_view = sparse_test.build_graph(ctx.get());
         GGML_ASSERT(sparse_view->src[0] != nullptr);
         if (!ggml_backend_dev_supports_op(cpu, sparse_view->src[0])) {
