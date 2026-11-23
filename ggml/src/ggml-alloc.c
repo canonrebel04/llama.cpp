@@ -476,7 +476,17 @@ static struct vbuffer * ggml_vbuffer_alloc_sizes(
         return NULL;
     }
 
-    for (int n = 0; n < GGML_VBUFFER_MAX_CHUNKS && sizes[n] > 0; ++n) {
+    // vbuffer chunks are a dynamic array now, size it before filling
+    int n_chunks = 0;
+    while (n_chunks < GGML_VBUFFER_MAX_CHUNKS && sizes[n_chunks] > 0) {
+        ++n_chunks;
+    }
+    if (!ggml_vbuffer_reserve_chunks(buf, n_chunks)) {
+        free(buf);
+        return NULL;
+    }
+
+    for (int n = 0; n < n_chunks; ++n) {
         buf->chunks[n] = ggml_backend_buft_alloc_buffer(buft, sizes[n]);
         if (buf->chunks[n] == NULL) {
             ggml_vbuffer_free(buf);
